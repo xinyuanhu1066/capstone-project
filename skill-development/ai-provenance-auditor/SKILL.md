@@ -1,6 +1,6 @@
 ---
 name: ai-provenance-auditor
-description: Specialized workflows for implementing non-invasive AI training auditing and blockchain-based provenance systems. Use when developing or maintaining auditing SDKs (PyTorch/Python) and decentralized storage controllers (Node.js/OrbitDB/IPFS/Ethers.js).
+description: Specialized workflows for implementing non-invasive AI training auditing and blockchain-based provenance systems. Use when developing or maintaining auditing SDKs (PyTorch/Python), decentralized storage controllers (Node.js/OrbitDB/IPFS), and provenance dashboards (React).
 ---
 
 # AI Provenance Auditor
@@ -15,67 +15,36 @@ To maintain a "Zero-Footprint" philosophy, use global monkey-patching of PyTorch
 - **Loss Capture**: Patch `torch.Tensor.backward` to automatically intercept loss scalar items.
 - **Weights Capture**: Patch `torch.optim.Optimizer.__init__` to wrap the `step()` method of every instance. This ensures compatibility with all optimizer subclasses (SGD, Adam, etc.) without class-level conflicts.
 
-### Implementation Pattern
-```python
-def _apply_global_patches(self):
-    # 1. Patch Tensor.backward
-    original_backward = torch.Tensor.backward
-    def patched_backward(tensor_self, *args, **kwargs):
-        if tensor_self.dim() == 0:
-            self.current_loss = float(tensor_self.item())
-        return original_backward(tensor_self, *args, **kwargs)
-    torch.Tensor.backward = patched_backward
-
-    # 2. Patch Optimizer instance step
-    original_opt_init = torch.optim.Optimizer.__init__
-    def patched_opt_init(opt_self, *args, **kwargs):
-        original_opt_init(opt_self, *args, **kwargs)
-        original_step = opt_self.step
-        def hooked_step(*s_args, **s_kwargs):
-            result = original_step(*s_args, **s_kwargs)
-            self._on_step_completed(opt_self)
-            return result
-        object.__setattr__(opt_self, 'step', hooked_step)
-    torch.optim.Optimizer.__init__ = patched_opt_init
-```
-
 ## Audit Controller (Node.js + OrbitDB + Ethers.js)
+
+### CID Stability & Metadata Separation
+**Critical Workflow**: To ensure blockchain verification succeeds, the CID anchored to the blockchain must never change. 
+1. Store the **Immutable Audit Packet** in OrbitDB first to get its CID.
+2. Anchor that CID to the Blockchain.
+3. Store the resulting **Transaction Hash** as a *separate* metadata entry in OrbitDB linked by `packet_hash`.
+4. During verification, fetch the primary record by CID to compare against the blockchain anchor.
+
+```javascript
+// Correct pattern:
+const cid = await db.put(auditRecord) // Get CID
+const txHash = await anchorToBlockchain(cid) // Anchor CID
+await db.put({ _id: `meta-${hash}`, tx_hash: txHash }) // Store meta separately
+```
 
 ### Persistent Storage with Helia
 Use `blockstore-level` for Helia persistence to ensure data survives process restarts.
 
-### Blockchain Anchoring (Ethers.js)
-Anchor OrbitDB CIDs to a smart contract to ensure immutability and verifiable lineage.
+## Provenance Dashboard (React + React-Flow)
 
-```javascript
-import { ethers } from 'ethers'
-const provider = new ethers.JsonRpcProvider(RPC_URL)
-const wallet = new ethers.Wallet(PRIVATE_KEY, provider)
-const contract = new ethers.Contract(ADDRESS, ABI, wallet)
-
-// Anchor OrbitDB CID to contract
-const tx = await contract.anchorRecord(stepId, orbitdbCid, datasetMerkleRoot)
-await tx.wait()
-```
-
-### Single-Node Dev Mode
-In single-node environments (e.g., local testing), `gossipsub` may fail with `PublishError.NoPeersSubscribedToTopic`. Enable `allowPublishToZeroTopicPeers` to bypass this.
-
-```javascript
-import { gossipsub } from '@chainsafe/libp2p-gossipsub'
-const Libp2pOptions = {
-  services: {
-    pubsub: gossipsub({ allowPublishToZeroTopicPeers: true })
-  }
-}
-```
+### Training DAG Visualization
+Use `React-Flow` with `Dagre` for automatic layout of the training lineage.
+- **Robustness**: Implement null-checks and optional chaining for all provenance metadata (e.g., `packet.provenance?.dataset_merkle_root`) to prevent UI crashes during data loading.
+- **Component Lifecycle**: Define `nodeTypes` outside the component or use `useMemo` to prevent unnecessary re-renders and React Flow warnings.
 
 ## Cryptographic Standards
 - **Datasets**: Use Merkle Roots for static file-system provenance.
-- **Weights/Metrics**: Use SHA-256 for runtime state and metric packets.
 - **Aggregation**: Combine all hashes into a signed "Audit Metadata Packet" for blockchain anchoring.
 
 ## Troubleshooting
-- **Missing PubSub**: If OrbitDB fails with `addEventListener` errors, ensure `gossipsub` and `identify` services are enabled in the `libp2p` configuration.
+- **Integrity Breach (False Positive)**: Usually caused by updating the audit record with the `tx_hash` *after* anchoring, which changes the CID. Follow the Metadata Separation pattern.
 - **Chain ID Mismatch**: In Hardhat/Ganache, ensure the `chainId` in `hardhat.config.js` matches the network (e.g., 1337 for Ganache).
-- **Buffer Bloat**: Ensure the Python SDK uses an asynchronous background thread with a thread-safe queue to avoid impacting training latency.
