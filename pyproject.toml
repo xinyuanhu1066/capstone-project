@@ -5,6 +5,7 @@ description = "A blockchain-based AI provenance system."
 requires-python = "==3.11.*"
 dependencies = [
     "numpy<2.0.0",
+    "requests>=2.33.1",
     "torch>=2.2.2",
     "torchvision>=0.17.2",
 ]

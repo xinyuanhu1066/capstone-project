@@ -5,8 +5,12 @@ import queue
 import types
 import functools
 import sys
+import requests
 from typing import Any, Dict, Optional
 from audit_sdk.hashing_engine.engine import HashingEngine
+
+# Configuration
+CONTROLLER_URL = os.getenv("AUDIT_CONTROLLER_URL", "http://localhost:3000/audit/packet")
 
 class TrainingWatcher:
     """
@@ -130,14 +134,32 @@ class TrainingWatcher:
                     metrics=data["metrics"],
                     dataset_merkle_root=self.dataset_merkle_root
                 )
-                print(f"[Audit Log] Step {audit_packet['step_id']} | Packet Hash: {audit_packet['packet_hash'][:12]}...")
-                sys.stdout.flush()
+                
+                # Send packet to Audit Controller
+                self._dispatch_to_controller(audit_packet)
+                
                 self.buffer.task_done()
             except queue.Empty:
                 continue
             except Exception as e:
                 print(f"[Watcher Error] {e}")
                 sys.stdout.flush()
+
+    def _dispatch_to_controller(self, audit_packet: Dict[str, Any]):
+        """
+        Send the audit packet to the Express server for storage in OrbitDB.
+        """
+        try:
+            response = requests.post(CONTROLLER_URL, json=audit_packet, timeout=5)
+            if response.status_code == 201:
+                res_data = response.json()
+                print(f"[Audit Log] Step {audit_packet['step_id']} | Packet Hash: {audit_packet['packet_hash'][:12]}... | CID: {res_data.get('cid', 'N/A')[:12]}...")
+            else:
+                print(f"[Watcher Warning] Controller returned status {response.status_code}: {response.text}")
+            sys.stdout.flush()
+        except requests.exceptions.RequestException as e:
+            print(f"[Watcher Error] Failed to connect to Audit Controller at {CONTROLLER_URL}: {e}")
+            sys.stdout.flush()
 
     def stop(self):
         self.is_running = False
