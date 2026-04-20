@@ -181,3 +181,12 @@ cython_debug/
 .cursorindexingignore
 
 .DS_Store
+node_modules/
+ai-training/data/
+ai-training/model/
+audit-controller/ipfs/
+audit-controller/orbitdb/
+audit-controller/startup.log
+skill-development/
+*.skill
+
