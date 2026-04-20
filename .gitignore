@@ -187,6 +187,8 @@ ai-training/model/
 audit-controller/ipfs/
 audit-controller/orbitdb/
 audit-controller/startup.log
+dashboard/node_modules/
+dashboard/dist/
 skill-development/
 *.skill
 
