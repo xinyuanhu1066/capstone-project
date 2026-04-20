@@ -1,0 +1,121 @@
+import React, { useState, useEffect } from 'react';
+import { verifyStepIntegrity, type AuditPacket } from '../services/api';
+import { Shield, Database, Cpu, Activity, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+
+interface IntegrityPanelProps {
+  selectedPacket: AuditPacket | null;
+}
+
+const IntegrityPanel: React.FC<IntegrityPanelProps> = ({ selectedPacket }) => {
+  const [verifying, setVerifying] = useState(false);
+  const [verificationResult, setVerificationResult] = useState<{ is_valid: boolean; details?: any } | null>(null);
+
+  // Reset verification status when node selection changes
+  useEffect(() => {
+    setVerificationResult(null);
+    setVerifying(false);
+  }, [selectedPacket]);
+
+  const handleVerify = async () => {
+    if (!selectedPacket) return;
+    setVerifying(true);
+    const result = await verifyStepIntegrity(selectedPacket.step_id);
+    setVerificationResult(result);
+    setVerifying(false);
+  };
+
+  if (!selectedPacket) {
+    return (
+      <div className="integrity-panel">
+        <div style={{ textAlign: 'center', marginTop: '50%', color: '#94a3b8' }}>
+          <Activity size={48} style={{ marginBottom: '1rem', opacity: 0.5 }} />
+          <p>Select a training node to view cryptographic provenance</p>
+        </div>
+      </div>
+    );
+  }
+
+  const isVerified = verificationResult?.is_valid;
+  const statusColor = verifying ? 'var(--warning)' : (isVerified === false ? 'var(--danger)' : 'var(--success)');
+
+  return (
+    <div className="integrity-panel">
+      <h2 style={{ color: 'var(--accent-cyan)', fontSize: '1.2rem', marginBottom: '0.5rem' }}>
+        PROVENANCE DETAILS
+      </h2>
+      
+      <div style={{ padding: '15px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'rgba(255,255,255,0.02)' }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+          {verifying ? (
+            <Loader2 size={18} className="animate-spin" color="var(--warning)" />
+          ) : isVerified === false ? (
+            <AlertTriangle size={18} color="var(--danger)" />
+          ) : (
+            <Shield size={18} color="var(--success)" />
+          )}
+          <span style={{ fontWeight: 'bold', color: statusColor }}>
+            Status: {verifying ? 'VERIFYING...' : (isVerified === false ? 'INTEGRITY BREACH' : 'VERIFIED')}
+          </span>
+        </div>
+        
+        <div style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
+          Timestamp: {new Date(selectedPacket.timestamp).toLocaleString()}
+        </div>
+      </div>
+
+      <section>
+        <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Database size={16} /> DECENTRALIZED STORAGE
+        </h3>
+        <div style={{ background: '#0a0b10', padding: '10px', borderRadius: '4px', border: '1px solid #1e293b' }}>
+          <div style={{ marginBottom: '8px' }}>
+            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>OrbitDB CID</label>
+            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all', color: 'var(--accent-cyan)' }}>{selectedPacket.cid || 'N/A'}</code>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>Packet Hash</label>
+            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{selectedPacket.packet_hash}</code>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Shield size={16} /> BLOCKCHAIN ANCHOR
+        </h3>
+        <div style={{ background: '#0a0b10', padding: '10px', borderRadius: '4px', border: '1px solid #1e293b' }}>
+          <div style={{ marginBottom: '8px' }}>
+            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>TX Hash</label>
+            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all', color: 'var(--accent-magenta)' }}>{selectedPacket.tx_hash || 'N/A'}</code>
+          </div>
+          <div>
+            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>Dataset Merkle Root</label>
+            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{selectedPacket.provenance?.dataset_merkle_root || 'N/A'}</code>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+          <Cpu size={16} /> RUNTIME METRICS
+        </h3>
+        <div style={{ background: '#0a0b10', padding: '10px', borderRadius: '4px', border: '1px solid #1e293b' }}>
+          <pre style={{ fontSize: '0.75rem', color: 'var(--text-primary)' }}>
+            {JSON.stringify(selectedPacket.runtime_data?.metrics, null, 2)}
+          </pre>
+        </div>
+      </section>
+
+      <button 
+        className="btn-primary" 
+        style={{ width: '100%', marginTop: 'auto' }}
+        onClick={handleVerify}
+        disabled={verifying}
+      >
+        {verifying ? 'VERIFYING...' : 'RE-VERIFY LINEAGE'}
+      </button>
+    </div>
+  );
+};
+
+export default IntegrityPanel;
