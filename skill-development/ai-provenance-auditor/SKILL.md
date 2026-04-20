@@ -1,11 +1,11 @@
 ---
 name: ai-provenance-auditor
-description: Specialized workflows for implementing non-invasive AI training auditing and blockchain-based provenance systems. Use when developing or maintaining auditing SDKs (PyTorch/Python) and decentralized storage controllers (Node.js/OrbitDB/IPFS).
+description: Specialized workflows for implementing non-invasive AI training auditing and blockchain-based provenance systems. Use when developing or maintaining auditing SDKs (PyTorch/Python) and decentralized storage controllers (Node.js/OrbitDB/IPFS/Ethers.js).
 ---
 
 # AI Provenance Auditor
 
-This skill codifies the workflows for building a zero-footprint auditing system for AI training processes, integrating cryptographic hashing with decentralized storage.
+This skill codifies the workflows for building a zero-footprint auditing system for AI training processes, integrating cryptographic hashing with decentralized storage and blockchain anchoring.
 
 ## Non-Invasive Auditing (PyTorch)
 
@@ -39,16 +39,23 @@ def _apply_global_patches(self):
     torch.optim.Optimizer.__init__ = patched_opt_init
 ```
 
-## Audit Controller (Node.js + OrbitDB)
+## Audit Controller (Node.js + OrbitDB + Ethers.js)
 
 ### Persistent Storage with Helia
 Use `blockstore-level` for Helia persistence to ensure data survives process restarts.
 
+### Blockchain Anchoring (Ethers.js)
+Anchor OrbitDB CIDs to a smart contract to ensure immutability and verifiable lineage.
+
 ```javascript
-import { createHelia } from 'helia'
-import { LevelBlockstore } from 'blockstore-level'
-const blockstore = new LevelBlockstore('./ipfs/blocks')
-const helia = await createHelia({ blockstore })
+import { ethers } from 'ethers'
+const provider = new ethers.JsonRpcProvider(RPC_URL)
+const wallet = new ethers.Wallet(PRIVATE_KEY, provider)
+const contract = new ethers.Contract(ADDRESS, ABI, wallet)
+
+// Anchor OrbitDB CID to contract
+const tx = await contract.anchorRecord(stepId, orbitdbCid, datasetMerkleRoot)
+await tx.wait()
 ```
 
 ### Single-Node Dev Mode
@@ -70,4 +77,5 @@ const Libp2pOptions = {
 
 ## Troubleshooting
 - **Missing PubSub**: If OrbitDB fails with `addEventListener` errors, ensure `gossipsub` and `identify` services are enabled in the `libp2p` configuration.
+- **Chain ID Mismatch**: In Hardhat/Ganache, ensure the `chainId` in `hardhat.config.js` matches the network (e.g., 1337 for Ganache).
 - **Buffer Bloat**: Ensure the Python SDK uses an asynchronous background thread with a thread-safe queue to avoid impacting training latency.
