@@ -4,6 +4,11 @@ import torch.optim as optim
 from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
 import os
+import sys
+
+# Ensure audit_sdk is in the path
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+import audit_sdk.watcher.watcher as audit_sdk
 
 # Hyperparameters
 BATCH_SIZE = 64
@@ -40,6 +45,7 @@ def train(model, device, train_loader, optimizer, epoch):
         loss = nn.functional.nll_loss(output, target)
         loss.backward()
         optimizer.step()
+
         if batch_idx % 100 == 0:
             print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)} '
                   f'({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
@@ -71,6 +77,11 @@ def main():
     os.makedirs(data_path, exist_ok=True)
     os.makedirs(model_path, exist_ok=True)
 
+    # Completely Non-Invasive Initialization
+    # One line of code to enable full auditing
+    hyperparams = {"lr": LEARNING_RATE, "momentum": MOMENTUM, "batch_size": BATCH_SIZE}
+    watcher = audit_sdk.init(dataset_dir=data_path, step_interval=100, hyperparams=hyperparams)
+
     # Data Transformations
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -89,9 +100,14 @@ def main():
     model = MNISTNet().to(DEVICE)
     optimizer = optim.SGD(model.parameters(), lr=LEARNING_RATE, momentum=MOMENTUM)
 
-    for epoch in range(1, EPOCHS + 1):
-        train(model, DEVICE, train_loader, optimizer, epoch)
-        test(model, DEVICE, test_loader)
+    try:
+        for epoch in range(1, EPOCHS + 1):
+            train(model, DEVICE, train_loader, optimizer, epoch)
+            test(model, DEVICE, test_loader)
+    finally:
+        # Ensure watcher stops and flushes its buffer
+        print("Stopping Watcher...")
+        watcher.stop()
 
     # Save the final model
     save_path = os.path.join(model_path, "mnist_model.pth")
