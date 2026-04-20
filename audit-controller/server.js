@@ -1,6 +1,7 @@
 import express from 'express'
 import cors from 'cors'
 import { initOrbitDB, closeOrbitDB } from './services/orbitdb.js'
+import { initBlockchain } from './services/blockchain.js'
 import auditRoutes from './routes/audit.js'
 
 const app = express()
@@ -28,10 +29,13 @@ const handleShutdown = async (signal) => {
 process.on('SIGTERM', () => handleShutdown('SIGTERM'))
 process.on('SIGINT', () => handleShutdown('SIGINT'))
 
-// Start server after OrbitDB is initialized
+// Start server after OrbitDB and Blockchain are initialized
 const start = async () => {
   try {
+    console.log('[Audit Controller] Initializing services...')
     await initOrbitDB()
+    await initBlockchain()
+    
     app.listen(PORT, () => {
       console.log(`[Audit Controller] Express server listening on port ${PORT}`)
     })
