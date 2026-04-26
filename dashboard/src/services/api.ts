@@ -3,6 +3,7 @@ const API_BASE_URL = 'http://localhost:3000';
 export interface AuditPacket {
   _id: string;
   step_id: number;
+  session_id: string;
   provenance: {
     dataset_merkle_root: string;
     weights_sha256: string;
@@ -19,9 +20,30 @@ export interface AuditPacket {
   timestamp: string;
 }
 
-export const fetchPackets = async (): Promise<AuditPacket[]> => {
+export interface TrainingSession {
+  session_id: string;
+  start_time: string;
+  end_time: string;
+  steps: number;
+}
+
+export const fetchSessions = async (): Promise<TrainingSession[]> => {
   try {
-    const response = await fetch(`${API_BASE_URL}/audit/packets`);
+    const response = await fetch(`${API_BASE_URL}/audit/sessions`);
+    if (!response.ok) throw new Error('Failed to fetch training sessions');
+    return await response.json();
+  } catch (error) {
+    console.error('[API Service Error] fetchSessions failed:', error);
+    return [];
+  }
+};
+
+export const fetchPackets = async (sessionId?: string): Promise<AuditPacket[]> => {
+  try {
+    const url = sessionId 
+      ? `${API_BASE_URL}/audit/packets?session_id=${sessionId}`
+      : `${API_BASE_URL}/audit/packets`;
+    const response = await fetch(url);
     if (!response.ok) throw new Error('Failed to fetch audit packets');
     return await response.json();
   } catch (error) {

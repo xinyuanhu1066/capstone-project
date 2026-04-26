@@ -110,16 +110,63 @@ router.get('/verify/:stepId', async (req, res) => {
   }
 })
 
-// GET /audit/packets - Retrieve all audit packets
-router.get('/packets', async (req, res) => {
+// GET /audit/sessions - Retrieve unique training sessions
+router.get('/sessions', async (req, res) => {
   try {
     const db = getDB()
     if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
     const entries = await db.all()
     
+    // Filter out meta records and get unique session IDs
+    const primaryRecords = entries.filter(e => e.value.session_id !== undefined && !e.value._id.startsWith('meta-'))
+    
+    const sessionsMap = {}
+    primaryRecords.forEach(p => {
+        const sid = p.value.session_id
+        if (!sessionsMap[sid]) {
+            sessionsMap[sid] = {
+                session_id: sid,
+                start_time: p.value.timestamp,
+                end_time: p.value.timestamp,
+                steps: 0
+            }
+        }
+        sessionsMap[sid].steps += 1
+        if (new Date(p.value.timestamp) < new Date(sessionsMap[sid].start_time)) {
+            sessionsMap[sid].start_time = p.value.timestamp
+        }
+        if (new Date(p.value.timestamp) > new Date(sessionsMap[sid].end_time)) {
+            sessionsMap[sid].end_time = p.value.timestamp
+        }
+    })
+
+    const sessions = Object.values(sessionsMap).sort((a, b) => 
+        new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
+    )
+    
+    res.json(sessions)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// GET /audit/packets - Retrieve all audit packets (optionally filtered by session)
+router.get('/packets', async (req, res) => {
+  try {
+    const { session_id } = req.query
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    const entries = await db.all()
+    
     // We need to merge primary records with their metadata (tx_hash)
-    const primaryRecords = entries.filter(e => e.value.step_id !== undefined && !e.value._id.startsWith('meta-'))
+    let primaryRecords = entries.filter(e => e.value.step_id !== undefined && !e.value._id.startsWith('meta-'))
+    
+    if (session_id) {
+        primaryRecords = primaryRecords.filter(e => e.value.session_id === session_id)
+    }
+
     const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
 
     const packets = primaryRecords.map(p => {

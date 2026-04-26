@@ -56,6 +56,7 @@ class HashingEngine:
 
     def create_audit_packet(self, 
                             step_id: int, 
+                            session_id: str,
                             weights_hash: str, 
                             hyperparams: Dict[str, Any], 
                             metrics: Dict[str, Any], 
@@ -70,6 +71,7 @@ class HashingEngine:
 
         packet = {
             "step_id": step_id,
+            "session_id": session_id,
             "provenance": {
                 "dataset_merkle_root": dataset_merkle_root,
                 "weights_sha256": weights_hash,

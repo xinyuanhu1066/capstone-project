@@ -6,6 +6,8 @@ import types
 import functools
 import sys
 import requests
+import uuid
+import time
 from typing import Any, Dict, Optional
 from audit_sdk.hashing_engine.engine import HashingEngine
 
@@ -37,6 +39,8 @@ class TrainingWatcher:
         self.current_loss = 0.0
         self.dataset_merkle_root = self._calculate_initial_merkle_root()
         self.hyperparams = {}
+        # Generate a unique session ID for this training run
+        self.session_id = f"session-{int(time.time())}-{str(uuid.uuid4())[:8]}"
         self._initialized = True
 
         # Start background processing thread
@@ -44,6 +48,8 @@ class TrainingWatcher:
         self.processor_thread.start()
         
         self._apply_global_patches()
+        print(f"[Watcher] Started session: {self.session_id}")
+        sys.stdout.flush()
 
     def _calculate_initial_merkle_root(self) -> str:
         if not os.path.exists(self.dataset_dir):
@@ -129,6 +135,7 @@ class TrainingWatcher:
                 data = self.buffer.get(timeout=1.0)
                 audit_packet = self.hashing_engine.create_audit_packet(
                     step_id=data["step_id"],
+                    session_id=self.session_id,
                     weights_hash=data["weights_hash"],
                     hyperparams=data["hyperparams"],
                     metrics=data["metrics"],

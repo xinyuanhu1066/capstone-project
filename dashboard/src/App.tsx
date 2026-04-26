@@ -1,43 +1,99 @@
 import React, { useState, useEffect } from 'react';
 import './styles/theme.css';
-import { fetchPackets, type AuditPacket } from './services/api';
+import { fetchPackets, fetchSessions, type AuditPacket, type TrainingSession } from './services/api';
 import LineageMap from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
-import { Terminal, DatabaseZap } from 'lucide-react';
+import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
 
 function App() {
+  const [sessions, setSessions] = useState<TrainingSession[]>([]);
+  const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [packets, setPackets] = useState<AuditPacket[]>([]);
   const [selectedPacket, setSelectedPacket] = useState<AuditPacket | null>(null);
   const [loading, setLoading] = useState(true);
 
-  const loadData = async () => {
+  const loadSessions = async () => {
     try {
-      console.log('[Dashboard] Fetching audit data...');
-      const data = await fetchPackets();
+      const data = await fetchSessions();
+      setSessions(data);
+      if (data.length > 0 && !selectedSessionId) {
+        setSelectedSessionId(data[0].session_id);
+      }
+    } catch (error) {
+      console.error('[Dashboard Error] Failed to load sessions:', error);
+    }
+  };
+
+  const loadPackets = async (sessionId: string) => {
+    try {
+      console.log(`[Dashboard] Fetching audit data for session ${sessionId}...`);
+      const data = await fetchPackets(sessionId);
       
       if (data && Array.isArray(data)) {
         // Sort by step_id to ensure correct DAG flow
         const sorted = data.sort((a, b) => a.step_id - b.step_id);
         setPackets(sorted);
-      } else {
-        console.warn('[Dashboard] Received invalid data format:', data);
       }
     } catch (error) {
-      console.error('[Dashboard Error] Failed to load data:', error);
+      console.error('[Dashboard Error] Failed to load packets:', error);
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    loadData();
-    // Poll for new packets every 5 seconds during training
-    const interval = setInterval(loadData, 5000);
+    loadSessions();
+    const interval = setInterval(loadSessions, 5000);
     return () => clearInterval(interval);
   }, []);
 
+  useEffect(() => {
+    if (selectedSessionId) {
+      loadPackets(selectedSessionId);
+      const interval = setInterval(() => loadPackets(selectedSessionId), 5000);
+      return () => clearInterval(interval);
+    }
+  }, [selectedSessionId]);
+
+  const formatTime = (isoString: string) => {
+    return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  };
+
   return (
     <div className="dashboard-container">
+      <aside className="sidebar">
+        <div className="sidebar-header">
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', color: 'var(--accent-cyan)' }}>
+            <History size={20} />
+            <h2 style={{ fontSize: '0.9rem', textTransform: 'uppercase', letterSpacing: '1px' }}>Training History</h2>
+          </div>
+        </div>
+        <div className="sidebar-content">
+          {sessions.length === 0 ? (
+            <div style={{ padding: '2rem', textAlign: 'center', opacity: 0.5 }}>
+              <p style={{ fontSize: '0.8rem' }}>No sessions found</p>
+            </div>
+          ) : (
+            sessions.map((s) => (
+              <div 
+                key={s.session_id} 
+                className={`activity-item ${selectedSessionId === s.session_id ? 'active' : ''}`}
+                onClick={() => setSelectedSessionId(s.session_id)}
+              >
+                <div className="activity-id">{s.session_id.split('-').slice(0, 2).join('-')}...</div>
+                <div className="activity-time">{formatTime(s.start_time)}</div>
+                <div className="activity-meta">
+                  <span style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                    <Activity size={12} /> {s.steps} steps
+                  </span>
+                  <span>{new Date(s.start_time).toLocaleDateString()}</span>
+                </div>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
       <div className="lineage-container">
         <header style={{ 
           position: 'absolute', 
@@ -64,7 +120,7 @@ function App() {
           </div>
         </header>
 
-        {loading ? (
+        {loading && !selectedSessionId ? (
           <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
             <p className="font-mono" style={{ color: 'var(--accent-cyan)' }}>INITIALIZING DATA STREAMS...</p>
           </div>
