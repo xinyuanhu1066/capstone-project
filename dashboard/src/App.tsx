@@ -16,9 +16,15 @@ function App() {
     try {
       const data = await fetchSessions();
       setSessions(data);
-      if (data.length > 0 && !selectedSessionId) {
-        setSelectedSessionId(data[0].session_id);
-      }
+      
+      // FIX BUG 1: Only set the initial session if none is currently selected.
+      // Using a functional update ensures we check the latest state and don't overwrite user selection.
+      setSelectedSessionId(current => {
+        if (!current && data.length > 0) {
+          return data[0].session_id;
+        }
+        return current;
+      });
     } catch (error) {
       console.error('[Dashboard Error] Failed to load sessions:', error);
     }
