@@ -143,7 +143,11 @@ function App() {
             <p style={{ fontSize: '0.8rem' }}>Run test_sdk.py to start training provenance capture</p>
           </div>
         ) : (
-          <LineageMap packets={packets} onNodeClick={setSelectedPacket} />
+          <LineageMap 
+            packets={packets} 
+            selectedPacket={selectedPacket}
+            onNodeClick={setSelectedPacket} 
+          />
         )}
       </div>
 

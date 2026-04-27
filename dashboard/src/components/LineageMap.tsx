@@ -41,11 +41,11 @@ const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
   return { nodes, edges };
 };
 
-const CustomNode = ({ data }: any) => {
+const CustomNode = ({ data, selected }: any) => {
   const displayHash = data?.hash ? `${data.hash.substring(0, 12)}...` : 'N/A';
   
   return (
-    <div className="custom-node valid">
+    <div className={`custom-node valid ${selected ? 'selected-node' : ''}`}>
       <Handle type="target" position={Position.Left} style={{ background: '#555' }} />
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
@@ -64,17 +64,20 @@ const nodeTypes = {
 
 interface LineageMapProps {
   packets: AuditPacket[];
+  selectedPacket: AuditPacket | null;
   onNodeClick: (packet: AuditPacket) => void;
 }
 
-const LineageMap: React.FC<LineageMapProps> = ({ packets, onNodeClick }) => {
+const LineageMap: React.FC<LineageMapProps> = ({ packets, selectedPacket, onNodeClick }) => {
   const { nodes, edges } = useMemo(() => {
     const initialNodes: Node[] = packets.map((p, index) => ({
-      // Use a more robust ID generation to avoid 'undefined' keys
-      id: p.packet_hash || `step-idx-${index}-${p.step_id}`,
+      // Use packet_hash as ID for stability
+      id: p.packet_hash || `step-${p.step_id}-${index}`,
       type: 'custom',
       data: { stepId: p.step_id, hash: p.packet_hash, fullData: p },
       position: { x: 0, y: 0 },
+      // Force selected state based on App level selectedPacket
+      selected: selectedPacket?.packet_hash === p.packet_hash
     }));
 
     const initialEdges: Edge[] = [];
@@ -92,7 +95,7 @@ const LineageMap: React.FC<LineageMapProps> = ({ packets, onNodeClick }) => {
     }
 
     return getLayoutedElements(initialNodes, initialEdges);
-  }, [packets]);
+  }, [packets, selectedPacket]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>

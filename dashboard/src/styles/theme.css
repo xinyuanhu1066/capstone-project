@@ -128,6 +128,12 @@ body {
   box-shadow: 0 0 10px rgba(0, 242, 255, 0.3);
 }
 
+.custom-node.selected-node {
+  border-color: var(--accent-cyan);
+  background: rgba(0, 242, 255, 0.1);
+  box-shadow: 0 0 20px rgba(0, 242, 255, 0.4);
+}
+
 .custom-node.valid {
   border-left: 4px solid var(--success);
 }
