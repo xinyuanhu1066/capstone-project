@@ -1,0 +1,64 @@
+diff --git a/node_modules/@orbitdb/core/src/access-controllers/ipfs.js b/node_modules/@orbitdb/core/src/access-controllers/ipfs.js
+index 40904cc..d5591ea 100644
+--- a/node_modules/@orbitdb/core/src/access-controllers/ipfs.js
++++ b/node_modules/@orbitdb/core/src/access-controllers/ipfs.js
+@@ -8,6 +8,7 @@ import * as dagCbor from '@ipld/dag-cbor'
+ import { sha256 } from 'multiformats/hashes/sha2'
+ import { base58btc } from 'multiformats/bases/base58'
+ import pathJoin from '../utils/path-join.js'
++import LevelStorage from '../storage/level.js'
+ 
+ const codec = dagCbor
+ const hasher = sha256
+@@ -55,7 +56,10 @@ const type = 'ipfs'
+ const IPFSAccessController = ({ write, storage } = {}) => async ({ orbitdb, identities, address }) => {
+   storage = storage || await ComposedStorage(
+     await LRUStorage({ size: 1000 }),
+-    await IPFSBlockStorage({ ipfs: orbitdb.ipfs, pin: true })
++    await ComposedStorage(
++      await LevelStorage({ path: pathJoin(orbitdb.directory || './orbitdb', './ac-storage') }),
++      await IPFSBlockStorage({ ipfs: orbitdb.ipfs, pin: true })
++    )
+   )
+   write = write || [orbitdb.identity.id]
+ 
+diff --git a/node_modules/@orbitdb/core/src/orbitdb.js b/node_modules/@orbitdb/core/src/orbitdb.js
+index cc055cb..20854a5 100644
+--- a/node_modules/@orbitdb/core/src/orbitdb.js
++++ b/node_modules/@orbitdb/core/src/orbitdb.js
+@@ -30,7 +30,7 @@ const DefaultAccessController = IPFSAccessController
+  * @throws "IPFS instance is required argument" if no IPFS instance is provided.
+  * @instance
+  */
+-const OrbitDB = async ({ ipfs, id, identity, identities, directory } = {}) => {
++const OrbitDB = async ({ ipfs, id, identity, identities, directory, manifestStorage } = {}) => {
+   /**
+    * @namespace module:OrbitDB~OrbitDB
+    * @description The instance returned by {@link module:OrbitDB}.
+@@ -61,7 +61,7 @@ const OrbitDB = async ({ ipfs, id, identity, identities, directory } = {}) => {
+     identity = await identities.createIdentity({ id })
+   }
+ 
+-  const manifestStore = await ManifestStore({ ipfs })
++  const manifestStore = await ManifestStore({ ipfs, storage: manifestStorage })
+ 
+   let databases = {}
+ 
+@@ -126,7 +126,7 @@ const OrbitDB = async ({ ipfs, id, identity, identities, directory } = {}) => {
+       manifest = await manifestStore.get(addr.hash)
+       const acType = manifest.accessController.split('/', 2).pop()
+       AccessController = getAccessController(acType)()
+-      accessController = await AccessController({ orbitdb: { open, identity, ipfs }, identities, address: manifest.accessController })
++      accessController = await AccessController({ orbitdb: { open, identity, ipfs, directory }, identities, address: manifest.accessController })
+       name = manifest.name
+       type = type || manifest.type
+       meta = manifest.meta
+@@ -134,7 +134,7 @@ const OrbitDB = async ({ ipfs, id, identity, identities, directory } = {}) => {
+       // If the address given was not valid, eg. just the name of the database
+       type = type || DefaultDatabaseType
+       AccessController = AccessController || DefaultAccessController()
+-      accessController = await AccessController({ orbitdb: { open, identity, ipfs }, identities, name: address })
++      accessController = await AccessController({ orbitdb: { open, identity, ipfs, directory }, identities, name: address })
+       const m = await manifestStore.create({ name: address, type, accessController: accessController.address, meta })
+       manifest = m.manifest
+       address = OrbitDBAddress(m.hash)
