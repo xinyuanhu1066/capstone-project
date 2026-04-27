@@ -11,27 +11,27 @@ import dagre from 'dagre';
 import 'reactflow/dist/style.css';
 import { type AuditPacket } from '../services/api';
 
-const dagreGraph = new dagre.graphlib.Graph();
-dagreGraph.setDefaultEdgeLabel(() => ({}));
-
 const nodeWidth = 200;
 const nodeHeight = 80;
 
 const getLayoutedElements = (nodes: Node[], edges: Edge[]) => {
-  dagreGraph.setGraph({ rankdir: 'LR' });
+  // FIX BUG 2: Create a NEW graph each time to avoid stale data from previous sessions
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({ rankdir: 'LR', nodesep: 70, ranksep: 100 });
+  g.setDefaultEdgeLabel(() => ({}));
 
   nodes.forEach((node) => {
-    dagreGraph.setNode(node.id, { width: nodeWidth, height: nodeHeight });
+    g.setNode(node.id, { width: nodeWidth, height: nodeHeight });
   });
 
   edges.forEach((edge) => {
-    dagreGraph.setEdge(edge.source, edge.target);
+    g.setEdge(edge.source, edge.target);
   });
 
-  dagre.layout(dagreGraph);
+  dagre.layout(g);
 
   nodes.forEach((node) => {
-    const nodeWithPosition = dagreGraph.node(node.id);
+    const nodeWithPosition = g.node(node.id);
     node.position = {
       x: nodeWithPosition.x - nodeWidth / 2,
       y: nodeWithPosition.y - nodeHeight / 2,
