@@ -61,6 +61,12 @@ function App() {
     }
   }, [selectedSessionId]);
 
+  const handleSessionSelect = (sessionId: string) => {
+    // FIX BUG 3: Clear selected packet when switching sessions to avoid confusion
+    setSelectedPacket(null);
+    setSelectedSessionId(sessionId);
+  };
+
   const formatTime = (isoString: string) => {
     return new Date(isoString).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
   };
@@ -84,7 +90,7 @@ function App() {
               <div 
                 key={s.session_id} 
                 className={`activity-item ${selectedSessionId === s.session_id ? 'active' : ''}`}
-                onClick={() => setSelectedSessionId(s.session_id)}
+                onClick={() => handleSessionSelect(s.session_id)}
               >
                 <div className="activity-id">{s.session_id.split('-').slice(0, 2).join('-')}...</div>
                 <div className="activity-time">{formatTime(s.start_time)}</div>
