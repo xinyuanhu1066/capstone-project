@@ -1,3 +1,8 @@
+// src/components/EpochNode.tsx
+// Custom React Flow node for epoch-level DAG nodes.
+// Shows epoch number, test accuracy, avg loss. 
+// Click the chevron to expand/collapse child step nodes.
+
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import { ChevronDown, ChevronRight, Shield, TrendingUp } from 'lucide-react';
@@ -45,7 +50,17 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         transition: 'all 0.2s ease',
       }}
     >
-      <Handle type="target" position={Position.Left} style={{ background: '#334155' }} />
+      {/* Top handle — receives connection from previous epoch */}
+      <Handle id="top" type="target" position={Position.Top}
+        style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
+
+      {/* Left handle — receives connection from timeline (visual only) */}
+      <Handle id="left" type="target" position={Position.Left}
+        style={{ background: '#334155', opacity: 0 }} />
+
+      {/* Right handle — sends connection to first step when expanded */}
+      <Handle id="right" type="source" position={Position.Right}
+        style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
 
       {/* Header */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
@@ -101,7 +116,9 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         </div>
       </div>
 
-      <Handle type="source" position={Position.Right} style={{ background: '#334155' }} />
+      {/* Bottom handle — sends connection to next epoch */}
+      <Handle id="bottom" type="source" position={Position.Bottom}
+        style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
     </div>
   );
 };
