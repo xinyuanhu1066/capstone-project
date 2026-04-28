@@ -161,7 +161,11 @@ router.get('/packets', async (req, res) => {
     const entries = await db.all()
     
     // We need to merge primary records with their metadata (tx_hash)
-    let primaryRecords = entries.filter(e => e.value.step_id !== undefined && !e.value._id.startsWith('meta-'))
+    let primaryRecords = entries.filter(e => 
+        e.value.step_id !== undefined && 
+        !e.value._id.startsWith('meta-') &&
+        e.value.packet_type !== 'epoch'
+    )
     
     if (session_id) {
         primaryRecords = primaryRecords.filter(e => e.value.session_id === session_id)

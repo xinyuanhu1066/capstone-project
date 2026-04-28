@@ -12,6 +12,7 @@ import { Shield } from 'lucide-react';
 
 const EPOCH_W = 220, EPOCH_H = 95;
 const STEP_W  = 180, STEP_H  = 80;
+const NODES_PER_ROW = 4;
 
 interface StepNodeData {
   stepId: number;
@@ -20,7 +21,6 @@ interface StepNodeData {
   fullData: AuditPacket;
 }
 
-// ─── Step node ───────────────────────────────────────────────────────────────
 const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, selected }) => {
   const displayHash = data?.hash ? `${data.hash.substring(0, 10)}…` : 'N/A';
   return (
@@ -46,23 +46,35 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
   );
 };
 
-// ─── Dagre layout ─────────────────────────────────────────────────────────────
-const applyDagreLayout = (
-  nodes: Node[],
-  edges: Edge[],
-  nodeW: number,
-  nodeH: number,
-  rankdir = 'LR',
-): Node[] => {
+const getLayoutedElements = (nodes: Node[], edges: Edge[], rankdir = 'LR') => {
   const g = new dagre.graphlib.Graph();
-  g.setGraph({ rankdir, nodesep: 60, ranksep: 90 });
+  g.setGraph({ rankdir, nodesep: 100, ranksep: 140 });
   g.setDefaultEdgeLabel(() => ({}));
-  nodes.forEach(n => g.setNode(n.id, { width: nodeW, height: nodeH }));
-  edges.forEach(e => g.setEdge(e.source, e.target));
+
+  nodes.forEach((node) => {
+    const width = node.width || (node.type === 'epoch' ? EPOCH_W : STEP_W);
+    const height = node.height || (node.type === 'epoch' ? EPOCH_H : STEP_H);
+    g.setNode(node.id, { width, height });
+  });
+
+  edges.forEach((edge) => {
+    g.setEdge(edge.source, edge.target);
+  });
+
   dagre.layout(g);
-  return nodes.map(n => {
-    const pos = g.node(n.id);
-    return { ...n, position: { x: pos.x - nodeW / 2, y: pos.y - nodeH / 2 } };
+
+  return nodes.map((node) => {
+    const nodeWithPosition = g.node(node.id);
+    const width = node.width || (node.type === 'epoch' ? EPOCH_W : STEP_W);
+    const height = node.height || (node.type === 'epoch' ? EPOCH_H : STEP_H);
+    
+    return {
+      ...node,
+      position: {
+        x: nodeWithPosition.x - width / 2,
+        y: nodeWithPosition.y - height / 2,
+      },
+    };
   });
 };
 
@@ -70,13 +82,11 @@ interface LineageMapProps {
   packets: AuditPacket[];
   epochSummaries: EpochSummary[];
   selectedPacket: AuditPacket | EpochSummary | null;
-  onNodeClick: (data: AuditPacket | EpochSummary) => void;
+  onNodeClick: (data: AuditPacket | EpochSummary | null) => void;
 }
 
-// ─── Node types (stable reference — defined outside component) ────────────────
 const nodeTypes = { epoch: EpochNode, step: StepNode };
 
-// ─── Main component ───────────────────────────────────────────────────────────
 const LineageMap: React.FC<LineageMapProps> = ({
   packets,
   epochSummaries,
@@ -86,8 +96,6 @@ const LineageMap: React.FC<LineageMapProps> = ({
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [expandedEpochs, setExpandedEpochs] = useState<Set<number>>(new Set());
-  
-  // Track structural identity to avoid re-layouts
   const lastStructureRef = useRef<string>('');
 
   const toggleEpoch = useCallback((epoch: number) => {
@@ -102,69 +110,66 @@ const LineageMap: React.FC<LineageMapProps> = ({
     });
   }, []);
 
-  // Sync internal state when props change
   useEffect(() => {
-    // 1. Group packets by epoch
-    const stepsByEpoch: Record<number, AuditPacket[]> = {};
+    const stepPackets = packets.filter(p => !('epoch' in p));
     const sortedEpochs = [...epochSummaries].sort((a, b) => a.epoch - b.epoch);
+    const stepsByEpoch: Record<number, AuditPacket[]> = {};
+    
     sortedEpochs.forEach((ep, i) => {
       const lo = i === 0 ? 0 : sortedEpochs[i - 1].step_id + 1;
-      stepsByEpoch[ep.epoch] = packets.filter(p => p.step_id >= lo && p.step_id <= ep.step_id);
+      stepsByEpoch[ep.epoch] = stepPackets.filter(p => p.step_id >= lo && p.step_id <= ep.step_id);
     });
 
-    // 2. Build graph elements
     const rfNodes: Node[] = [];
     const rfEdges: Edge[] = [];
 
     if (!epochSummaries.length) {
-      // Fallback: Step chain
-      const sorted = [...packets].sort((a, b) => a.step_id - b.step_id);
+      const sorted = [...stepPackets].sort((a, b) => a.step_id - b.step_id);
       sorted.forEach(p => {
         rfNodes.push({
           id: `step-${p.step_id}`,
           type: 'step',
           position: { x: 0, y: 0 },
-          selected: selectedPacket !== null && !('epoch' in selectedPacket) && selectedPacket.packet_hash === p.packet_hash,
-          data: {
-            stepId: p.step_id,
-            hash: p.packet_hash,
-            loss: p.runtime_data?.metrics?.loss,
-            fullData: p,
-          },
+          selected: selectedPacket !== null && !('epoch' in selectedPacket) && (selectedPacket as AuditPacket).packet_hash === p.packet_hash,
+          data: { stepId: p.step_id, hash: p.packet_hash, loss: p.runtime_data?.metrics?.loss, fullData: p },
         });
       });
       sorted.slice(0, -1).forEach((p, i) => {
         rfEdges.push({
-          id: `e-${p.step_id}-${sorted[i + 1].step_id}`,
+          id: `e-${p.step_id}-${sorted[i+1].step_id}`,
           source: `step-${p.step_id}`,
-          target: `step-${sorted[i + 1].step_id}`,
+          target: `step-${sorted[i+1].step_id}`,
           animated: true,
           style: { stroke: '#00f2ff', strokeWidth: 1.5 },
         });
       });
     } else {
-      // Epoch Tiered DAG
       sortedEpochs.forEach((ep, i) => {
         const isExpanded = expandedEpochs.has(ep.epoch);
-        const children   = stepsByEpoch[ep.epoch] ?? [];
+        const children = stepsByEpoch[ep.epoch] ?? [];
+        
+        let virtualWidth = EPOCH_W;
+        let virtualHeight = EPOCH_H;
+        
+        if (isExpanded && children.length > 0) {
+          const cols = Math.min(children.length, NODES_PER_ROW);
+          const rows = Math.ceil(children.length / NODES_PER_ROW);
+          virtualWidth = Math.max(EPOCH_W, cols * (STEP_W + 20));
+          virtualHeight = EPOCH_H + 60 + rows * (STEP_H + 40);
+        }
 
         rfNodes.push({
           id: `epoch-${ep.epoch}`,
           type: 'epoch',
           position: { x: 0, y: 0 },
+          width: virtualWidth,
+          height: virtualHeight,
           selected: selectedPacket !== null && 'epoch' in selectedPacket && selectedPacket.epoch === ep.epoch,
           data: {
-            epoch: ep.epoch,
-            sessionId: ep.session_id,
-            stepId: ep.step_id,
-            metrics: ep.metrics,
-            cid: ep.cid,
-            txHash: ep.tx_hash,
-            timestamp: ep.timestamp,
-            isExpanded,
-            childCount: children.length,
-            onToggleExpand: toggleEpoch,
-            onNodeClick: () => onNodeClick(ep),
+            epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
+            metrics: ep.metrics, cid: ep.cid, txHash: ep.tx_hash,
+            timestamp: ep.timestamp, isExpanded, childCount: children.length,
+            onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
           },
         });
 
@@ -180,90 +185,60 @@ const LineageMap: React.FC<LineageMapProps> = ({
 
         if (isExpanded) {
           const sortedChildren = [...children].sort((a, b) => a.step_id - b.step_id);
-          sortedChildren.forEach((p, j) => {
-            const stepNodeId = `step-${p.step_id}`;
+          sortedChildren.forEach((p) => {
             rfNodes.push({
-              id: stepNodeId,
+              id: `step-${p.step_id}`,
               type: 'step',
               position: { x: 0, y: 0 },
-              selected: selectedPacket !== null && !('epoch' in selectedPacket) && selectedPacket.packet_hash === p.packet_hash,
-              data: {
-                stepId: p.step_id,
-                hash: p.packet_hash,
-                loss: p.runtime_data?.metrics?.loss,
-                fullData: p,
-              },
+              selected: selectedPacket !== null && !('epoch' in selectedPacket) && (selectedPacket as AuditPacket).packet_hash === p.packet_hash,
+              data: { stepId: p.step_id, hash: p.packet_hash, loss: p.runtime_data?.metrics?.loss, fullData: p },
+              parentNode: `epoch-${ep.epoch}`,
+              extent: 'parent',
+              draggable: false,
             });
-
-            if (j === 0) {
-              rfEdges.push({
-                id: `es-epoch${ep.epoch}-step${p.step_id}`,
-                source: `epoch-${ep.epoch}`,
-                target: stepNodeId,
-                style: { stroke: '#334155', strokeDasharray: '4 3' },
-              });
-            } else {
-              rfEdges.push({
-                id: `ss-${sortedChildren[j - 1].step_id}-${p.step_id}`,
-                source: `step-${sortedChildren[j - 1].step_id}`,
-                target: stepNodeId,
-                animated: true,
-                style: { stroke: '#334155', strokeWidth: 1 },
-              });
-            }
           });
         }
       });
     }
 
-    // 3. Determine if layout is needed
     const currentStructure = JSON.stringify({
       nodes: rfNodes.map(n => n.id),
       expanded: Array.from(expandedEpochs),
-      session: packets.length > 0 ? packets[0].session_id : 'none'
+      session: stepPackets.length > 0 ? stepPackets[0].session_id : 'none'
     });
 
     if (currentStructure !== lastStructureRef.current) {
       lastStructureRef.current = currentStructure;
       
-      // Perform Layout
-      let laidOutNodes = rfNodes;
-      if (epochSummaries.length === 0) {
-        laidOutNodes = applyDagreLayout(rfNodes, rfEdges, STEP_W, STEP_H);
-      } else {
-        // Advanced layout for Epoch mode
-        const epochOnly = rfNodes.filter(n => n.type === 'epoch');
-        const epochEdges = rfEdges.filter(e => e.id.startsWith('ee-'));
-        const laidOutEpochs = applyDagreLayout(epochOnly, epochEdges, EPOCH_W, EPOCH_H);
-        
-        const epochPos: Record<string, { x: number; y: number }> = {};
-        laidOutEpochs.forEach(n => { epochPos[n.id] = n.position; });
-        
-        rfNodes.forEach(n => {
-          if (n.type === 'epoch') {
-            n.position = epochPos[n.id] || { x: 0, y: 0 };
-          } else {
-            const parentEdge = rfEdges.find(e => e.target === n.id && e.id.startsWith('es-'));
-            if (parentEdge) {
-              const epochNum = parseInt(parentEdge.source.replace('epoch-', ''));
-              const siblings = (stepsByEpoch[epochNum] || []).sort((a, b) => a.step_id - b.step_id);
-              const idx = siblings.findIndex(p => `step-${p.step_id}` === n.id);
-              const pPos = epochPos[parentEdge.source] || { x: 0, y: 0 };
-              n.position = {
-                x: pPos.x + (idx - (siblings.length - 1) / 2) * (STEP_W + 20),
-                y: pPos.y + EPOCH_H + 50,
-              };
-            }
-          }
-        });
-        laidOutNodes = rfNodes;
-      }
+      const containerNodes = rfNodes.filter(n => !n.parentNode);
+      const containerEdges = rfEdges.filter(e => !rfNodes.find(n => n.id === e.source && n.parentNode));
       
-      setNodes(laidOutNodes);
+      const laidOutContainers = getLayoutedElements(containerNodes, containerEdges);
+      
+      const finalNodes = [...laidOutContainers];
+      rfNodes.forEach(n => {
+        if (n.parentNode) {
+          const parent = laidOutContainers.find(p => p.id === n.parentNode);
+          if (parent) {
+            const siblings = rfNodes.filter(s => s.parentNode === n.parentNode);
+            const idx = siblings.findIndex(s => s.id === n.id);
+            
+            const cols = Math.min(siblings.length, NODES_PER_ROW);
+            const row = Math.floor(idx / NODES_PER_ROW);
+            const col = idx % NODES_PER_ROW;
+            
+            n.position = {
+              x: (parent.width! / 2) + (col - (cols - 1) / 2) * (STEP_W + 20) - (STEP_W / 2),
+              y: EPOCH_H + 40 + row * (STEP_H + 30),
+            };
+            finalNodes.push(n);
+          }
+        }
+      });
+
+      setNodes(finalNodes);
       setEdges(rfEdges);
     } else {
-      // Structure is same, just update data (like selection or loss values)
-      // but PRESERVE existing positions
       setNodes(currentNodes => 
         rfNodes.map(newNode => {
           const existing = currentNodes.find(n => n.id === newNode.id);
@@ -283,35 +258,15 @@ const LineageMap: React.FC<LineageMapProps> = ({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onNodeClick={(_, node) => {
-          if (node.type === 'step') {
-            onNodeClick(node.data.fullData as AuditPacket);
-          }
+          if (node.type === 'step') onNodeClick(node.data.fullData);
         }}
-        onPaneClick={() => onNodeClick(null as any)}
+        onPaneClick={() => onNodeClick(null)}
         fitView
         fitViewOptions={{ padding: 0.25 }}
       >
         <Background color="#1e293b" gap={20} />
         <Controls />
       </ReactFlow>
-
-      <div style={{
-        position: 'absolute',
-        bottom: 12,
-        left: 12,
-        fontSize: '10px',
-        fontFamily: 'var(--font-mono)',
-        color: '#94a3b8',
-        background: 'rgba(10,11,16,0.75)',
-        padding: '5px 10px',
-        borderRadius: '4px',
-        border: '1px solid #1e293b',
-        pointerEvents: 'none',
-      }}>
-        {epochSummaries.length > 0
-          ? 'Click epoch chevron ▶ to expand step nodes'
-          : `${nodes.length} step node${nodes.length !== 1 ? 's' : ''} · no epoch data yet`}
-      </div>
     </div>
   );
 };
