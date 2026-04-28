@@ -184,4 +184,80 @@ router.get('/packets', async (req, res) => {
   }
 })
 
+// POST /audit/epoch - Receive and store epoch-level summary packet
+router.post('/epoch', async (req, res) => {
+  try {
+    const packet = req.body
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    const epochEntry = {
+      _id: `epoch-${packet.session_id}-${packet.epoch}`,
+      ...packet,
+      packet_type: 'epoch',
+      timestamp: new Date().toISOString(),
+    }
+
+    const cid = await db.put(epochEntry)
+    console.log(
+      `[Audit Controller] Epoch ${packet.epoch} stored | Session: ${packet.session_id} | CID: ${cid}`
+    )
+
+    // Anchor epoch checkpoint to blockchain (same recordStep call — reuses existing contract)
+    let txHash = 'N/A'
+    try {
+      txHash = await anchorToBlockchain(
+        packet.step_id,
+        cid,
+        packet.provenance?.dataset_merkle_root ?? ''
+      )
+    } catch (bcError) {
+      console.error('[Audit Controller] Epoch blockchain anchor failed:', bcError.message)
+    }
+
+    res.status(201).json({ status: 'success', cid, tx_hash: txHash })
+  } catch (error) {
+    console.error('[Audit Controller Error] Failed to store epoch packet:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// GET /audit/epochs?session_id=xxx - Return epoch summaries for a session
+// Used by the frontend to build the top-level DAG nodes
+router.get('/epochs', async (req, res) => {
+  try {
+    const { session_id } = req.query
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    const entries = await db.all()
+
+    let epochRecords = entries.filter(
+      (e) => e.value.packet_type === 'epoch'
+    )
+
+    if (session_id) {
+      epochRecords = epochRecords.filter(
+        (e) => e.value.session_id === session_id
+      )
+    }
+
+    const epochs = epochRecords
+      .map((e) => ({
+        epoch: e.value.epoch,
+        session_id: e.value.session_id,
+        step_id: e.value.step_id,
+        metrics: e.value.runtime_data?.metrics ?? e.value.metrics,
+        cid: e.hash,
+        tx_hash: e.value.tx_hash ?? 'N/A',
+        timestamp: e.value.timestamp,
+      }))
+      .sort((a, b) => a.epoch - b.epoch)
+
+    res.json(epochs)
+  } catch (error) {
+    res.status(500).json({ error: error.message })
+  }
+})
+
 export default router
