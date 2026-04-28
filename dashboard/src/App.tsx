@@ -1,6 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './styles/theme.css';
-import { fetchPackets, fetchSessions, type AuditPacket, type TrainingSession } from './services/api';
+import { fetchPackets, fetchSessions, fetchEpochs, type AuditPacket, type TrainingSession, type EpochSummary } from './services/api';
 import LineageMap from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
 import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
@@ -9,62 +9,89 @@ function App() {
   const [sessions, setSessions] = useState<TrainingSession[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [packets, setPackets] = useState<AuditPacket[]>([]);
-  const [selectedPacket, setSelectedPacket] = useState<AuditPacket | null>(null);
+  const [selectedPacket, setSelectedPacket] = useState<AuditPacket | EpochSummary | null>(null);
   const [loading, setLoading] = useState(true);
+  const [epochSummaries, setEpochSummaries] = useState<EpochSummary[]>([]);
+  
+  // Use a ref to store the current session ID to avoid dependency cycle in loadData
+  const selectedSessionIdRef = useRef<string | null>(null);
+  const packetsRef = useRef<string>('');
+  const epochsRef = useRef<string>('');
 
-  const loadSessions = async () => {
+  const loadData = useCallback(async () => {
     try {
-      const data = await fetchSessions();
-      setSessions(data);
+      // 1. Load Sessions
+      const sessionsData = await fetchSessions();
+      setSessions(sessionsData);
       
-      // FIX BUG 1: Only set the initial session if none is currently selected.
-      // Using a functional update ensures we check the latest state and don't overwrite user selection.
-      setSelectedSessionId(current => {
-        if (!current && data.length > 0) {
-          return data[0].session_id;
+      // Update our local ref and state if no session is selected
+      if (!selectedSessionIdRef.current && sessionsData.length > 0) {
+        selectedSessionIdRef.current = sessionsData[0].session_id;
+        setSelectedSessionId(sessionsData[0].session_id);
+      }
+
+      const sessionId = selectedSessionIdRef.current;
+      if (sessionId) {
+        // Fetch packets and epochs separately to be more resilient
+        try {
+          const packetsData = await fetchPackets(sessionId);
+          const packetsJson = JSON.stringify(packetsData);
+          if (packetsJson !== packetsRef.current) {
+            packetsRef.current = packetsJson;
+            const sorted = [...packetsData].sort((a, b) => a.step_id - b.step_id);
+            setPackets(sorted);
+          }
+        } catch (err) {
+          console.error('[Dashboard Error] Failed to load packets:', err);
         }
-        return current;
-      });
-    } catch (error) {
-      console.error('[Dashboard Error] Failed to load sessions:', error);
-    }
-  };
 
-  const loadPackets = async (sessionId: string) => {
-    try {
-      console.log(`[Dashboard] Fetching audit data for session ${sessionId}...`);
-      const data = await fetchPackets(sessionId);
-      
-      if (data && Array.isArray(data)) {
-        // Sort by step_id to ensure correct DAG flow
-        const sorted = data.sort((a, b) => a.step_id - b.step_id);
-        setPackets(sorted);
+        try {
+          const epochsData = await fetchEpochs(sessionId);
+          const epochsJson = JSON.stringify(epochsData);
+          if (epochsJson !== epochsRef.current) {
+            epochsRef.current = epochsJson;
+            setEpochSummaries(epochsData);
+          }
+        } catch (err) {
+          console.error('[Dashboard Error] Failed to load epochs:', err);
+        }
       }
     } catch (error) {
-      console.error('[Dashboard Error] Failed to load packets:', error);
+      console.error('[Dashboard Error] Global sync failed:', error);
     } finally {
       setLoading(false);
     }
-  };
-
-  useEffect(() => {
-    loadSessions();
-    const interval = setInterval(loadSessions, 5000);
-    return () => clearInterval(interval);
   }, []);
 
+  // Poll for data updates
   useEffect(() => {
-    if (selectedSessionId) {
-      loadPackets(selectedSessionId);
-      const interval = setInterval(() => loadPackets(selectedSessionId), 5000);
-      return () => clearInterval(interval);
-    }
-  }, [selectedSessionId]);
+    const timer = setTimeout(() => {
+      loadData();
+    }, 0);
+    
+    const interval = setInterval(loadData, 5000);
+    return () => {
+      clearTimeout(timer);
+      clearInterval(interval);
+    };
+  }, [loadData]);
 
   const handleSessionSelect = (sessionId: string) => {
-    // FIX BUG 3: Clear selected packet when switching sessions to avoid confusion
+    if (sessionId === selectedSessionId) return;
+    
+    // Clear selection but NOT the packets/epochs immediately to avoid flicker
+    // They will be replaced when loadData completes for the new session
     setSelectedPacket(null);
+    
+    // Reset refs so the next load definitely triggers a state update
+    packetsRef.current = '';
+    epochsRef.current = '';
+    
+    selectedSessionIdRef.current = sessionId;
     setSelectedSessionId(sessionId);
+    
+    // Trigger immediate load
+    loadData();
   };
 
   const formatTime = (isoString: string) => {
@@ -115,36 +142,40 @@ function App() {
           padding: '1.5rem',
           display: 'flex',
           alignItems: 'center',
-          gap: '12px',
           background: 'rgba(10, 11, 16, 0.8)',
           width: '100%',
           borderBottom: '1px solid var(--border-color)',
           backdropFilter: 'blur(10px)'
         }}>
-          <Terminal color="var(--accent-cyan)" size={28} />
-          <div>
-            <h1 style={{ fontSize: '1.2rem', letterSpacing: '2px', fontWeight: 900 }}>
-              AI <span style={{ color: 'var(--accent-cyan)' }}>TRAINING</span> PROVENANCE
-            </h1>
-            <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-              Real-time Blockchain Audit Log | MNIST Prototype
-            </p>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <Terminal color="var(--accent-cyan)" size={28} />
+            <div>
+              <h1 style={{ fontSize: '1.2rem', letterSpacing: '2px', fontWeight: 900 }}>
+                AI <span style={{ color: 'var(--accent-cyan)' }}>TRAINING</span> PROVENANCE
+              </h1>
+              <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
+                Real-time Blockchain Audit Log | MNIST Prototype
+              </p>
+            </div>
           </div>
         </header>
 
-        {loading && !selectedSessionId ? (
+        {loading ? (
           <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
-            <p className="font-mono" style={{ color: 'var(--accent-cyan)' }}>INITIALIZING DATA STREAMS...</p>
+            <p className="font-mono" style={{ color: 'var(--accent-cyan)' }}>INITIALIZING PROVENANCE ENGINE...</p>
           </div>
-        ) : packets.length === 0 ? (
+        ) : (packets.length === 0 && epochSummaries.length === 0) ? (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', alignItems: 'center', justifyContent: 'center', gap: '1rem', color: 'var(--text-secondary)' }}>
             <DatabaseZap size={48} opacity={0.3} />
             <p className="font-mono">NO AUDIT DATA DETECTED</p>
-            <p style={{ fontSize: '0.8rem' }}>Run test_sdk.py to start training provenance capture</p>
+            <p style={{ fontSize: '0.8rem' }}>
+              {selectedSessionId ? `Session ${selectedSessionId.substring(0,8)} is empty` : 'Run training to start capture'}
+            </p>
           </div>
         ) : (
           <LineageMap 
             packets={packets} 
+            epochSummaries={epochSummaries}
             selectedPacket={selectedPacket}
             onNodeClick={setSelectedPacket} 
           />

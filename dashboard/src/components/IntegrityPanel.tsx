@@ -1,27 +1,46 @@
 import React, { useState, useEffect } from 'react';
-import { verifyStepIntegrity, type AuditPacket } from '../services/api';
-import { Shield, Database, Cpu, Activity, CheckCircle, AlertTriangle, Loader2 } from 'lucide-react';
+import { verifyStepIntegrity, type AuditPacket, type EpochSummary } from '../services/api';
+import { Shield, Database, Cpu, Activity, AlertTriangle, Loader2 } from 'lucide-react';
 
 interface IntegrityPanelProps {
-  selectedPacket: AuditPacket | null;
+  selectedPacket: AuditPacket | EpochSummary | null;
+}
+
+interface VerificationResult {
+  is_valid: boolean;
+  details?: {
+    cid_match?: boolean;
+    merkle_match?: boolean;
+    local_cid?: string;
+    blockchain_cid?: string;
+  };
 }
 
 const IntegrityPanel: React.FC<IntegrityPanelProps> = ({ selectedPacket }) => {
   const [verifying, setVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<{ is_valid: boolean; details?: any } | null>(null);
+  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
 
   // Reset verification status when node selection changes
   useEffect(() => {
-    setVerificationResult(null);
-    setVerifying(false);
+    const timer = setTimeout(() => {
+      setVerificationResult(null);
+      setVerifying(false);
+    }, 0);
+    return () => clearTimeout(timer);
   }, [selectedPacket]);
 
   const handleVerify = async () => {
     if (!selectedPacket) return;
     setVerifying(true);
-    const result = await verifyStepIntegrity(selectedPacket.step_id);
-    setVerificationResult(result);
-    setVerifying(false);
+    try {
+      const result = await verifyStepIntegrity(selectedPacket.step_id);
+      setVerificationResult(result);
+    } catch (error) {
+      console.error('[IntegrityPanel] Verification failed:', error);
+      setVerificationResult({ is_valid: false });
+    } finally {
+      setVerifying(false);
+    }
   };
 
   if (!selectedPacket) {
@@ -35,13 +54,18 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({ selectedPacket }) => {
     );
   }
 
+  const isEpoch = 'epoch' in selectedPacket;
   const isVerified = verificationResult?.is_valid;
   const statusColor = verifying ? 'var(--warning)' : (isVerified === false ? 'var(--danger)' : 'var(--success)');
+  
+  const metrics = isEpoch ? selectedPacket.metrics : (selectedPacket as AuditPacket).runtime_data?.metrics;
+  const packetHash = isEpoch ? 'N/A (Epoch Summary)' : (selectedPacket as AuditPacket).packet_hash;
+  const datasetRoot = isEpoch ? 'N/A' : (selectedPacket as AuditPacket).provenance?.dataset_merkle_root;
 
   return (
     <div className="integrity-panel">
       <h2 style={{ color: 'var(--accent-cyan)', fontSize: '1.2rem', marginBottom: '0.5rem' }}>
-        PROVENANCE DETAILS
+        {isEpoch ? `EPOCH ${selectedPacket.epoch} DETAILS` : 'STEP PROVENANCE'}
       </h2>
       
       <div style={{ padding: '15px', border: '1px solid var(--border-color)', borderRadius: '4px', background: 'rgba(255,255,255,0.02)' }}>
@@ -73,8 +97,8 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({ selectedPacket }) => {
             <code style={{ fontSize: '0.75rem', wordBreak: 'break-all', color: 'var(--accent-cyan)' }}>{selectedPacket.cid || 'N/A'}</code>
           </div>
           <div>
-            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>Packet Hash</label>
-            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{selectedPacket.packet_hash}</code>
+            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>{isEpoch ? 'Type' : 'Packet Hash'}</label>
+            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{packetHash}</code>
           </div>
         </div>
       </section>
@@ -88,20 +112,22 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({ selectedPacket }) => {
             <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>TX Hash</label>
             <code style={{ fontSize: '0.75rem', wordBreak: 'break-all', color: 'var(--accent-magenta)' }}>{selectedPacket.tx_hash || 'N/A'}</code>
           </div>
-          <div>
-            <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>Dataset Merkle Root</label>
-            <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{selectedPacket.provenance?.dataset_merkle_root || 'N/A'}</code>
-          </div>
+          {!isEpoch && (
+            <div>
+              <label style={{ display: 'block', fontSize: '0.7rem', color: '#64748b' }}>Dataset Merkle Root</label>
+              <code style={{ fontSize: '0.75rem', wordBreak: 'break-all' }}>{datasetRoot || 'N/A'}</code>
+            </div>
+          )}
         </div>
       </section>
 
       <section>
         <h3 style={{ fontSize: '0.9rem', color: 'var(--text-secondary)', marginBottom: '10px', display: 'flex', alignItems: 'center', gap: '8px' }}>
-          <Cpu size={16} /> RUNTIME METRICS
+          <Cpu size={16} /> {isEpoch ? 'EPOCH METRICS' : 'RUNTIME METRICS'}
         </h3>
         <div style={{ background: '#0a0b10', padding: '10px', borderRadius: '4px', border: '1px solid #1e293b' }}>
           <pre style={{ fontSize: '0.75rem', color: 'var(--text-primary)' }}>
-            {JSON.stringify(selectedPacket.runtime_data?.metrics, null, 2)}
+            {JSON.stringify(metrics, null, 2)}
           </pre>
         </div>
       </section>
