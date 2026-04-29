@@ -8,32 +8,21 @@ import sys
 import requests
 import uuid
 import time
-from typing import Any, Dict, Optional
+import io
+import hashlib
+import zstandard as zstd
+from typing import Any, Dict, Optional, List
 from audit_sdk.hashing_engine.engine import HashingEngine
 
 # Configuration
 CONTROLLER_URL = os.getenv("AUDIT_CONTROLLER_URL", "http://localhost:3000")
 PACKET_API_URL = f"{CONTROLLER_URL}/audit/packet"
 EPOCH_API_URL = f"{CONTROLLER_URL}/audit/epoch"
+BLOB_API_URL = f"{CONTROLLER_URL}/audit/blob"
 
 class TrainingWatcher:
     """
     Completely Non-Invasive Watcher: Uses global monkey-patching to capture training data.
-    Aligns with "Zero-Footprint" philosophy by requiring zero changes to the training loop.
-    
-    Epoch detection strategy
-    ────────────────────────
-    We patch DataLoader.__iter__ at the *class* level (not the instance level).
-    Each call to __iter__ returns a generator-like _SingleProcessDataLoaderIter
-    or _MultiProcessingDataLoaderIter. We wrap the returned iterator with a
-    thin sentinel iterator that fires _on_dataloader_exhausted() the moment
-    StopIteration is raised — i.e. exactly when one full pass over the dataset
-    completes.
-
-    To distinguish the *training* DataLoader from the *test* DataLoader we use
-    a simple heuristic: the loader whose dataset is larger is the training
-    loader. The first time each loader is iterated we register it; afterwards
-    exhaustion of the training loader → epoch boundary.
     """
     _instance = None
 
@@ -42,32 +31,39 @@ class TrainingWatcher:
             cls._instance = super(TrainingWatcher, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, dataset_dir: Optional[str] = None, step_interval: int = 100):
+    def __init__(self, dataset_dir: Optional[str] = None, step_interval: int = 100, dataset_name: str = "Unknown"):
         if hasattr(self, '_initialized') and self._initialized:
             return
         
         self.dataset_dir = dataset_dir or os.path.join(os.getcwd(), 'data')
+        self.dataset_name = dataset_name
         self.step_interval = step_interval
         self.hashing_engine = HashingEngine()
         self.buffer = queue.Queue()
         self.epoch_buffer = queue.Queue()
+        self.blob_buffer = queue.Queue()
         self.is_running = True
         self.global_step = 0
         self.current_loss = 0.0
         self.current_epoch = 0
-        self.dataset_merkle_root = self._calculate_initial_merkle_root()
         self.hyperparams = {}
+        
+        # Risk Mitigation: Step-level metrics tracking for anomaly detection
+        self.step_metrics: List[float] = []
 
         # Generate a unique session ID for this training run
         self.session_id = f"session-{int(time.time())}-{str(uuid.uuid4())[:8]}"
         
-        # DataLoader tracking
-        # We keep a weak-key mapping: id(loader) → dataset length
-        # so we can identify which loader is which without holding
-        # a hard reference (avoids memory leaks).
+        # Dataset Strategy (Plan Section 2.A): Map CID to OrbitDB
+        self.dataset_merkle_root = self._calculate_initial_merkle_root()
+        self.dataset_cid = self._snapshot_dataset()
+        
+        # Identifier Refactor: Resolve semantic version
+        self.dataset_version = self._resolve_dataset_version()
+        
         self._loader_sizes: Dict[int, int] = {}
-        self._train_loader_id: Optional[int] = None   # id() of training DataLoader
-        self._last_optimizer: Optional[Any] = None    # for weight snapshot at epoch end
+        self._train_loader_id: Optional[int] = None
+        self._last_optimizer: Optional[Any] = None
         
         self._initialized = True
 
@@ -75,13 +71,62 @@ class TrainingWatcher:
         self.processor_thread = threading.Thread(target=self._process_buffer, daemon=True)
         self.processor_thread.start()
         
-        # BUG FIX: Start the epoch processor thread!
         self.epoch_processor_thread = threading.Thread(target=self._process_epoch_buffer, daemon=True)
         self.epoch_processor_thread.start()
+
+        self.blob_processor_thread = threading.Thread(target=self._process_blob_buffer, daemon=True)
+        self.blob_processor_thread.start()
         
         self._apply_global_patches()
-        print(f"[Watcher] Started session: {self.session_id}")
+        print(f"[Watcher] Started session: {self.session_id} | Dataset: {self.dataset_name} ({self.dataset_version})")
         sys.stdout.flush()
+
+    def _resolve_dataset_version(self) -> str:
+        """Resolve semantic version from OrbitDB via Audit Controller (Identifier Refactor 1.B)."""
+        try:
+            payload = {
+                "dataset_name": self.dataset_name,
+                "merkle_root": self.dataset_merkle_root
+            }
+            response = requests.post(f"{CONTROLLER_URL}/audit/dataset/version", json=payload, timeout=5)
+            if response.status_code == 200:
+                return response.json().get("version", "v1.0")
+        except Exception as e:
+            print(f"[Watcher Error] Version resolution failed: {e}")
+        return "v1.0"
+
+    def _snapshot_dataset(self) -> str:
+        """Upload dataset to IPFS to get a Root CID (Plan Section 2.A)."""
+        if not os.path.exists(self.dataset_dir):
+            return "no-dataset-found"
+        
+        print(f"[Watcher] Taking IPFS snapshot of dataset: {self.dataset_dir}...")
+        
+        files_to_upload = []
+        for root, _, files in os.walk(self.dataset_dir):
+            for file in files:
+                full_path = os.path.join(root, file)
+                rel_path = os.path.relpath(full_path, self.dataset_dir)
+                with open(full_path, 'rb') as f:
+                    content = f.read()
+                    file_cid = self._upload_blob(content)
+                    if file_cid:
+                        files_to_upload.append({
+                            "path": rel_path,
+                            "cid": file_cid
+                        })
+        try:
+            payload = {
+                "dataset_name": self.dataset_name,
+                "files": files_to_upload
+            }
+            response = requests.post(f"{CONTROLLER_URL}/audit/dataset/directory", json=payload, timeout=30)
+            if response.status_code == 201:
+                return response.json().get("root_cid", "snapshot-failed")
+        except Exception as e:
+            print(f"[Watcher Error] Directory snapshot failed: {e}")
+            
+        return "snapshot-failed"
 
     def _calculate_initial_merkle_root(self) -> str:
         if not os.path.exists(self.dataset_dir):
@@ -93,53 +138,45 @@ class TrainingWatcher:
         return self.hashing_engine.calculate_merkle_root(file_paths)
 
     def _apply_global_patches(self):
-        """
-        Invasively patch PyTorch internals to capture data non-invasively for the user.
-        """
         # 1. Patch Tensor.backward to capture loss values automatically
         original_backward = torch.Tensor.backward
         watcher_self = self
 
         @functools.wraps(original_backward)
         def patched_backward(tensor_self, *args, **kwargs):
-            if tensor_self.dim() == 0:  # Usually a loss scalar
+            if tensor_self.dim() == 0:
                 watcher_self.current_loss = float(tensor_self.item())
             return original_backward(tensor_self, *args, **kwargs)
 
         torch.Tensor.backward = patched_backward
 
         # 2. Patch Optimizer.step logic
-        # Instead of patching every subclass (which is risky as seen), 
-        # let's patch the base class's __init__ to intercept all optimizer instances.
-        
         original_opt_init = torch.optim.Optimizer.__init__
 
         @functools.wraps(original_opt_init)
         def patched_opt_init(opt_self, *args, **kwargs):
             original_opt_init(opt_self, *args, **kwargs)
-            
-            # Wrap the instance's step method
             original_step = opt_self.step
             
             @functools.wraps(original_step)
             def hooked_step(*s_args, **s_kwargs):
-                # BUG FIX: Capture the optimizer instance so we can take snapshots at epoch end
                 watcher_self._last_optimizer = opt_self
-                
                 result = original_step(*s_args, **s_kwargs)
                 
                 watcher_self.global_step += 1
+                # Accumulate metrics for anomaly detection
+                watcher_self.step_metrics.append(watcher_self.current_loss)
+                
                 if watcher_self.global_step % watcher_self.step_interval == 0:
                     watcher_self._capture_snapshot(opt_self)
                 
                 return result
             
-            # Use __setattr__ to avoid any potential recursion or class-level issues
             object.__setattr__(opt_self, 'step', hooked_step)
 
         torch.optim.Optimizer.__init__ = patched_opt_init
 
-        # 3. Patch DataLoader.__iter__ to detect epoch boundaries
+        # 3. Patch DataLoader.__iter__
         original_iter = torch.utils.data.DataLoader.__iter__
         watcher = self
 
@@ -151,10 +188,7 @@ class TrainingWatcher:
             except (AttributeError, TypeError):
                 dataset_len = 0
 
-            # Register this loader
             watcher._loader_sizes[loader_id] = dataset_len
-
-            # Identify training loader: largest dataset we've seen
             if watcher._train_loader_id is None or \
                dataset_len > watcher._loader_sizes.get(watcher._train_loader_id, 0):
                 watcher._train_loader_id = loader_id
@@ -163,71 +197,92 @@ class TrainingWatcher:
             return _SentinelIter(inner_iter, loader_id, watcher)
 
         torch.utils.data.DataLoader.__iter__ = patched_iter
-
-        print(f"[Watcher] Global non-invasive instance-level patching enabled. Interval: {self.step_interval}")
         sys.stdout.flush()
 
     def _on_dataloader_exhausted(self, loader_id: int):
-        """
-        Called the moment a DataLoader is fully consumed (StopIteration).
-        Only fires the epoch packet when the TRAINING loader is exhausted.
-        """
         if loader_id != self._train_loader_id:
-            # This is the test/val loader finishing — not an epoch boundary.
             return
 
         self.current_epoch += 1
         epoch = self.current_epoch
 
-        # Capture weight snapshot for this epoch
+        # Capture weight snapshot for this epoch (Hash)
         weights_hash = self._capture_weights_hash()
+        
+        # Perform Full Checkpoint Persistence (As per plan Section 2.C)
+        checkpoint_data = self._capture_full_checkpoint()
 
         self.epoch_buffer.put({
-            "epoch":        epoch,
-            "step_id":      self.global_step,
+            "epoch": epoch,
+            "step_id": self.global_step,
             "weights_hash": weights_hash,
-            "loss":         self.current_loss,
+            "loss": self.current_loss,
+            "checkpoint": checkpoint_data
         })
 
-        print(
-            f"[Watcher] Epoch {epoch} boundary detected via DataLoader patch "
-            f"| step={self.global_step} | loss={self.current_loss:.4f}"
-        )
+        print(f"[Watcher] Epoch {epoch} boundary reached. Global Step: {self.global_step}")
         sys.stdout.flush()
     
     def _capture_weights_hash(self) -> str:
+        """Upgrade: Use raw binary buffers for weights_hash (As per plan Section 4)"""
         if self._last_optimizer is None:
             return "no-optimizer-captured"
-        weights_repr = ""
+        
+        hasher = hashlib.sha256()
         try:
             for group in self._last_optimizer.param_groups:
                 for p in group['params']:
-                    weights_repr += str(float(p.data.mean()))
-        except Exception:
-            weights_repr = "error_capturing_weights"
-        return self.hashing_engine.calculate_sha256(weights_repr.encode('utf-8'))
+                    # Hash raw binary data of the parameter tensor
+                    hasher.update(p.data.cpu().numpy().tobytes())
+        except Exception as e:
+            return f"error_hashing_weights_{str(e)}"
+            
+        return hasher.hexdigest()
+
+    def _capture_full_checkpoint(self) -> Optional[bytes]:
+        """Save full model weights to a binary buffer and compress with Zstd."""
+        if self._last_optimizer is None:
+            return None
+        
+        buffer = io.BytesIO()
+        try:
+            state = {
+                'step': self.global_step,
+                'param_groups': self._last_optimizer.param_groups,
+                'state': self._last_optimizer.state
+            }
+            torch.save(state, buffer)
+            raw_data = buffer.getvalue()
+            
+            # Zstd Compression (Plan Section 4, Task 3)
+            cctx = zstd.ZstdCompressor(level=3)
+            compressed_data = cctx.compress(raw_data)
+            
+            print(f"[Watcher] Checkpoint compressed: {len(raw_data)} -> {len(compressed_data)} bytes")
+            return compressed_data
+        except Exception as e:
+            print(f"[Watcher Error] Full checkpoint capture/compression failed: {e}")
+            return None
 
     def _capture_snapshot(self, optimizer):
-        """Extracts model weights from optimizer parameters and queues for hashing."""
-        weights_repr = ""
-        try:
-            for group in optimizer.param_groups:
-                for p in group['params']:
-                    weights_repr += str(float(p.data.mean()))
-        except Exception:
-            weights_repr = "error_capturing_weights"
+        """Standard step snapshot: Binary hash + metrics."""
+        weights_hash = self._capture_weights_hash()
         
-        weights_hash = self.hashing_engine.calculate_sha256(weights_repr.encode('utf-8'))
-        
+        # Multi-step metrics for anomaly detection (Plan 3.B)
+        metrics = {
+            "loss": self.current_loss,
+            "step_metrics": self.step_metrics.copy()
+        }
+        self.step_metrics = [] # Reset for next interval
+
         self.buffer.put({
             "step_id": self.global_step,
             "weights_hash": weights_hash,
-            "metrics": {"loss": self.current_loss},
+            "metrics": metrics,
             "hyperparams": self.hyperparams
         })
 
     def configure(self, hyperparams: Dict[str, Any]):
-        """Optional explicit config for hyperparams."""
         self.hyperparams.update(hyperparams)
 
     def _process_buffer(self):
@@ -242,22 +297,24 @@ class TrainingWatcher:
                     metrics=data["metrics"],
                     dataset_merkle_root=self.dataset_merkle_root
                 )
-                
-                # Send packet to Audit Controller
+                audit_packet["provenance"]["dataset_cid"] = self.dataset_cid
+                audit_packet["provenance"]["dataset_name"] = self.dataset_name
+                audit_packet["provenance"]["dataset_version"] = self.dataset_version
                 self._dispatch(audit_packet, PACKET_API_URL, level="Step")
-                
                 self.buffer.task_done()
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"[Watcher Error] Step buffer: {e}")
-                sys.stdout.flush()
     
     def _process_epoch_buffer(self):
-        """Background thread: epoch-level packets → /audit/epoch."""
         while self.is_running:
             try:
                 data = self.epoch_buffer.get(timeout=1.0)
+                
+                # If we have a full checkpoint, upload it first to get the CID
+                cid = None
+                if data["checkpoint"]:
+                    cid = self._upload_blob(data["checkpoint"])
+                
                 epoch_packet = self.hashing_engine.create_audit_packet(
                     step_id=data["step_id"],
                     session_id=self.session_id,
@@ -265,8 +322,11 @@ class TrainingWatcher:
                     hyperparams=self.hyperparams,
                     metrics={"loss": data["loss"], "epoch": data["epoch"]},
                     dataset_merkle_root=self.dataset_merkle_root,
+                    weights_cid=cid
                 )
-                # Tag so the backend can filter it separately
+                epoch_packet["provenance"]["dataset_cid"] = self.dataset_cid
+                epoch_packet["provenance"]["dataset_name"] = self.dataset_name
+                epoch_packet["provenance"]["dataset_version"] = self.dataset_version
                 epoch_packet["packet_type"] = "epoch"
                 epoch_packet["epoch"] = data["epoch"]
 
@@ -274,9 +334,31 @@ class TrainingWatcher:
                 self.epoch_buffer.task_done()
             except queue.Empty:
                 continue
-            except Exception as e:
-                print(f"[Watcher Error] Epoch buffer: {e}")
-                sys.stdout.flush()
+
+    def _process_blob_buffer(self):
+        """Asynchronous blob upload processor."""
+        while self.is_running:
+            try:
+                data = self.blob_buffer.get(timeout=1.0)
+                self._upload_blob(data)
+                self.blob_buffer.task_done()
+            except queue.Empty:
+                continue
+
+    def _upload_blob(self, blob: bytes) -> Optional[str]:
+        """Upload binary data to the Audit Controller and return the CID."""
+        try:
+            response = requests.post(
+                BLOB_API_URL, 
+                data=blob, 
+                headers={'Content-Type': 'application/octet-stream'},
+                timeout=30
+            )
+            if response.status_code == 201:
+                return response.json().get("cid")
+        except Exception as e:
+            print(f"[Watcher Error] Blob upload failed: {e}")
+        return None
 
     def _dispatch(self, packet: Dict[str, Any], url: str, level: str = ""):
         try:
@@ -284,68 +366,52 @@ class TrainingWatcher:
             if response.status_code == 201:
                 res_data = response.json()
                 print(
-                    f"[Audit Log] {level} {packet.get('step_id','')} "
-                    f"| Hash: {packet['packet_hash'][:12]}... "
-                    f"| CID: {res_data.get('cid', 'N/A')[:12]}..."
+                    f"[Audit Log] {level} {packet.get('step_id','')} | "
+                    f"Hash: {packet['packet_hash'][:8]}... | CID: {res_data.get('cid', 'N/A')[:8]}..."
                 )
-            else:
-                print(f"[Watcher Warning] {url} → {response.status_code}: {response.text}")
             sys.stdout.flush()
-        except requests.exceptions.RequestException as e:
+        except Exception as e:
             print(f"[Watcher Error] dispatch to {url}: {e}")
-            sys.stdout.flush()
 
     def stop(self):
+        """Risk Mitigation: Mandatory final capture (Plan 3.A)"""
+        print("[Watcher] Training end detected. Capturing final state...")
+        if self._last_optimizer:
+            self._capture_snapshot(self._last_optimizer)
+        
+        # Flush buffers
+        timeout = time.time() + 5
+        while not self.buffer.empty() and time.time() < timeout:
+            time.sleep(0.1)
+        
         self.is_running = False
-        if hasattr(self, 'processor_thread') and self.processor_thread.is_alive():
-            self.processor_thread.join(timeout=2.0)
-        if hasattr(self, 'epoch_processor_thread') and self.epoch_processor_thread.is_alive():
-            self.epoch_processor_thread.join(timeout=2.0)
-
+        for thread_name in ['processor_thread', 'epoch_processor_thread', 'blob_processor_thread']:
+            if hasattr(self, thread_name):
+                t = getattr(self, thread_name)
+                if t.is_alive():
+                    t.join(timeout=2.0)
 
 class _SentinelIter:
-    """
-    Wraps a DataLoader iterator and fires a callback the instant the
-    underlying iterator raises StopIteration (i.e. one full epoch ends).
-    """
-
     __slots__ = ('_inner', '_loader_id', '_watcher', '_exhausted')
-
     def __init__(self, inner, loader_id: int, watcher: TrainingWatcher):
         self._inner = inner
         self._loader_id = loader_id
         self._watcher = watcher
         self._exhausted = False
-
-    def __iter__(self):
-        return self
-
+    def __iter__(self): return self
     def __next__(self):
         try:
             return next(self._inner)
         except StopIteration:
             if not self._exhausted:
                 self._exhausted = True
-                # Fire on a background thread to avoid blocking the training loop
-                threading.Thread(
-                    target=self._watcher._on_dataloader_exhausted,
-                    args=(self._loader_id,),
-                    daemon=True,
-                ).start()
+                threading.Thread(target=self._watcher._on_dataloader_exhausted, args=(self._loader_id,), daemon=True).start()
             raise
-
     def __len__(self):
-        try:
-            return len(self._inner)
-        except (AttributeError, TypeError):
-            return 0
+        try: return len(self._inner)
+        except: return 0
 
-
-def init(dataset_dir: Optional[str] = None, step_interval: int = 100, hyperparams: Optional[Dict[str, Any]] = None):
-    """
-    The only call needed by the user.
-    """
-    watcher = TrainingWatcher(dataset_dir=dataset_dir, step_interval=step_interval)
-    if hyperparams:
-        watcher.configure(hyperparams)
+def init(dataset_dir: Optional[str] = None, step_interval: int = 100, hyperparams: Optional[Dict[str, Any]] = None, dataset_name: str = "Unknown"):
+    watcher = TrainingWatcher(dataset_dir=dataset_dir, step_interval=step_interval, dataset_name=dataset_name)
+    if hyperparams: watcher.configure(hyperparams)
     return watcher

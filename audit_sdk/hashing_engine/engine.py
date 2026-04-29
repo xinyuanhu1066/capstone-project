@@ -60,7 +60,8 @@ class HashingEngine:
                             weights_hash: str, 
                             hyperparams: Dict[str, Any], 
                             metrics: Dict[str, Any], 
-                            dataset_merkle_root: str) -> Dict[str, Any]:
+                            dataset_merkle_root: str,
+                            weights_cid: str = None) -> Dict[str, Any]:
         """
         Aggregation: Combine all hashes and raw metrics into an 'Audit Metadata Packet'.
         """
@@ -83,6 +84,9 @@ class HashingEngine:
                 "hyperparams": hyperparams
             }
         }
+        
+        if weights_cid:
+            packet["provenance"]["weights_cid"] = weights_cid
         
         # Final signature of the entire packet for integrity
         packet["packet_hash"] = self.calculate_sha256(packet)

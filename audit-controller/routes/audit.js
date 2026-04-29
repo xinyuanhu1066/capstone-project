@@ -1,8 +1,112 @@
 import express from 'express'
-import { getDB } from '../services/orbitdb.js'
+import { getDB, getHelia } from '../services/orbitdb.js'
 import { anchorToBlockchain, getRecordFromBlockchain } from '../services/blockchain.js'
+import { unixfs } from '@helia/unixfs'
+import { CID } from 'multiformats/cid'
 
 const router = express.Router()
+
+// POST /audit/blob - Receive and store large binary data in IPFS
+router.post('/blob', express.raw({ type: 'application/octet-stream', limit: '100mb' }), async (req, res) => {
+  try {
+    const helia = getHelia()
+    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+
+    const fs = unixfs(helia)
+    const cid = await fs.addBytes(req.body)
+    
+    console.log(`[Audit Controller] Blob stored | CID: ${cid.toString()}`)
+    res.status(201).json({ status: 'success', cid: cid.toString() })
+  } catch (error) {
+    console.error('[Audit Controller Error] Failed to store blob:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// POST /audit/dataset/version - Resolve semantic version of a dataset
+router.post('/dataset/version', async (req, res) => {
+  try {
+    const { dataset_name, merkle_root } = req.body
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    const entries = await db.all()
+    const datasetEntries = entries
+      .filter(e => e.value.type === 'DATASET_SNAPSHOT' && e.value.dataset_name === dataset_name)
+      .sort((a, b) => b.value.timestamp - a.value.timestamp)
+
+    const latest = datasetEntries[0]
+
+    if (latest) {
+      if (latest.value.merkle_root === merkle_root) {
+        return res.json({ version: latest.value.version })
+      } else {
+        // Increment version
+        const parts = latest.value.version.split('.')
+        const minor = parseInt(parts[1]) + 1
+        const newVersion = `${parts[0]}.${minor}`
+        
+        const newEntry = {
+          _id: `ds-${dataset_name}-${newVersion}`,
+          type: 'DATASET_SNAPSHOT',
+          dataset_name,
+          merkle_root,
+          version: newVersion,
+          parent_root: latest.value.merkle_root,
+          timestamp: Date.now()
+        }
+        await db.put(newEntry)
+        return res.json({ version: newVersion })
+      }
+    } else {
+      // Initialize as v1.0
+      const initialVersion = 'v1.0'
+      const newEntry = {
+        _id: `ds-${dataset_name}-${initialVersion}`,
+        type: 'DATASET_SNAPSHOT',
+        dataset_name,
+        merkle_root,
+        version: initialVersion,
+        timestamp: Date.now()
+      }
+      await db.put(newEntry)
+      return res.json({ version: initialVersion })
+    }
+  } catch (error) {
+    console.error('[Audit Controller Error] Failed to resolve version:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// POST /audit/dataset/directory
+router.post('/dataset/directory', async (req, res) => {
+  try {
+    const { files } = req.body
+    const helia = getHelia()
+    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+    const fs = unixfs(helia)
+
+    let rootCid = await fs.addDirectory()
+    console.log(`[Audit Controller] Building directory structure for ${files.length} files...`)
+
+    for (const file of files) {
+      try {
+        const fileCid = CID.parse(file.cid)
+        rootCid = await fs.cp(fileCid, rootCid, file.path)
+      } catch (err) {
+        console.warn(`[Audit Controller] Failed to link file ${file.path}:`, err.message)
+      }
+    }
+
+    const finalCid = rootCid.toString()
+    console.log(`[Audit Controller] Dataset directory finalized | Root CID: ${finalCid}`)
+
+    res.status(201).json({ status: 'success', root_cid: finalCid, file_count: files.length })
+  } catch (error) {
+    console.error('[Audit Controller Error] Failed to create directory:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
 
 // POST /audit/packet - Receive and store audit packet
 router.post('/packet', async (req, res) => {
@@ -254,6 +358,8 @@ router.get('/epochs', async (req, res) => {
         metrics: e.value.runtime_data?.metrics ?? e.value.metrics,
         cid: e.hash,
         tx_hash: e.value.tx_hash ?? 'N/A',
+        weights_cid: e.value.provenance?.weights_cid,
+        dataset_cid: e.value.provenance?.dataset_cid,
         timestamp: e.value.timestamp,
       }))
       .sort((a, b) => a.epoch - b.epoch)

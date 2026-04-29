@@ -119,6 +119,8 @@ export const initOrbitDB = async () => {
 
 export const getDB = () => db
 
+export const getHelia = () => helia
+
 export const closeOrbitDB = async () => {
   try {
     if (db) await db.close()

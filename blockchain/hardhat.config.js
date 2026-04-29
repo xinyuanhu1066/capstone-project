@@ -6,7 +6,7 @@ export default {
   networks: {
     ganache: {
       url: "http://127.0.0.1:7545",
-      accounts: ["0x22dbf5fbc9ab68f210c461c5b9b50a58006c484342617bcebfd2aff6a7d8b683"],
+      accounts: ["0x01440d9f3a6aa5dc3c9aac4fa8a1910465dc4971c48025b244e4f163748a3b75"],
       chainId: 1337,
     },
   },

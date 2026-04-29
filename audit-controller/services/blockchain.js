@@ -2,8 +2,8 @@ import { ethers } from 'ethers'
 
 // Configuration
 const GANACHE_URL = 'http://127.0.0.1:7545'
-const CONTRACT_ADDRESS = '0x98b44496a891e1Ee623868AAAc73097E294FDD9f'
-const PRIVATE_KEY = '0x22dbf5fbc9ab68f210c461c5b9b50a58006c484342617bcebfd2aff6a7d8b683'
+const CONTRACT_ADDRESS = '0x700684D33AaE754A584A410da7657CEA5051806e'
+const PRIVATE_KEY = '0x01440d9f3a6aa5dc3c9aac4fa8a1910465dc4971c48025b244e4f163748a3b75'
 
 const ABI = [
   "function anchorRecord(uint256 _stepId, string memory _orbitdbCid, string memory _datasetMerkleRoot) public",

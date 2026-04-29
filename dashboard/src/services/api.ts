@@ -6,6 +6,9 @@ export interface AuditPacket {
   session_id: string;
   provenance: {
     dataset_merkle_root: string;
+    dataset_cid: string;
+    dataset_name: string;
+    dataset_version: string;
     weights_sha256: string;
     hyperparams_sha256: string;
     metrics_sha256: string;
@@ -35,6 +38,8 @@ export interface EpochSummary {
   metrics: { test_accuracy?: number; avg_loss?: number };
   cid: string;
   tx_hash: string;
+  weights_cid?: string;
+  dataset_cid?: string;
   timestamp: string;
 }
 
@@ -83,4 +88,25 @@ export const fetchEpochs = async (sessionId: string): Promise<EpochSummary[]> =>
     console.error('[API Service Error] fetchEpochs failed:', error);
     throw error;
   }
+};
+
+// Identifier Refactor Utils (Plan Section 3, Task 3)
+
+export const formatOnChainReceipt = (txHash: string | undefined): string => {
+  if (!txHash || txHash === 'N/A') return 'Pending...';
+  // In a real system, we'd fetch block/index. For now, we'll format the hash.
+  return `TX-${txHash.substring(2, 6).toUpperCase()}`;
+};
+
+export const formatStorageReceipt = (cid: string | undefined): string => {
+  if (!cid || cid === 'N/A') return 'N/A';
+  // Plan Rationale: STR-{shortID}
+  const shortId = cid.substring(cid.length - 4).toUpperCase();
+  return `STR-${shortId}`;
+};
+
+export const resolveIdenticonColor = (hash: string): string => {
+  if (!hash) return 'var(--accent-cyan)';
+  const hue = parseInt(hash.substring(0, 8), 16) % 360;
+  return `hsl(${hue}, 70%, 50%)`;
 };
