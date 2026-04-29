@@ -12,7 +12,7 @@ import { Shield } from 'lucide-react';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const EPOCH_W        = 220;
-const EPOCH_H        = 95;
+const EPOCH_H        = 52;
 const STEP_W         = 175;
 const STEP_H         = 82;
 const NODES_PER_ROW  = 4;
@@ -137,7 +137,7 @@ const TimelineNode = ({ data }: NodeProps<TimelineNodeData>) => (
     {data.ticks.map((t, i) => (
       <div key={i} style={{
         position: 'absolute',
-        top: t.y - 9,   // centre the 18px-tall tick row on t.y
+        top: t.y,
         right: 0,
         display: 'flex', flexDirection: 'row-reverse', alignItems: 'center',
       }}>
@@ -312,8 +312,9 @@ const LineageMap: React.FC<LineageMapProps> = ({
     sortedEpochs.forEach(ep => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
+      const groupSize = isExpanded ? computeGroupSize(children.length) : { height: 0 };
       const slotH = isExpanded
-        ? Math.max(computeGroupSize(children.length).height, EPOCH_H)
+        ? Math.max(groupSize.height, EPOCH_H)
         : EPOCH_H;
       epochCentreY[ep.epoch] = cursorY + slotH / 2;
       cursorY += slotH + EPOCH_SPACING;
