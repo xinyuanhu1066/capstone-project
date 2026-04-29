@@ -1,11 +1,6 @@
-// src/components/EpochNode.tsx
-// Custom React Flow node for epoch-level DAG nodes.
-// Shows epoch number, test accuracy, avg loss. 
-// Click the chevron to expand/collapse child step nodes.
-
 import React from 'react';
 import { Handle, Position } from 'reactflow';
-import { ChevronDown, ChevronRight, Shield, TrendingUp } from 'lucide-react';
+import { ChevronDown, ChevronRight, TrendingUp, Shield } from 'lucide-react';
 
 export interface EpochNodeData {
   epoch: number;
@@ -16,29 +11,30 @@ export interface EpochNodeData {
   txHash: string;
   timestamp: string;
   isExpanded: boolean;
+  isFirstInSeq: boolean;
+  isLastInSeq: boolean;
   childCount: number;
   onToggleExpand: (epoch: number) => void;
-  onNodeClick: (data: EpochNodeData) => void;
+  onNodeClick: () => void;
 }
 
 const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data, selected }) => {
   const accuracy = data.metrics?.test_accuracy;
-  const loss = data.metrics?.avg_loss;
+  const loss     = data.metrics?.avg_loss;
+  const { isFirstInSeq, isLastInSeq } = data;
 
-  // Colour-code accuracy band
   const accuracyColor =
-    accuracy == null ? 'var(--text-secondary)'
-    : accuracy >= 97  ? 'var(--success)'
-    : accuracy >= 93  ? 'var(--warning)'
-    : 'var(--danger)';
+    accuracy == null  ? '#64748b'
+    : accuracy >= 97  ? '#10b981'
+    : accuracy >= 93  ? '#f59e0b'
+    : '#ef4444';
 
   return (
     <div
-      className={`epoch-node ${selected ? 'epoch-node--selected' : ''}`}
-      onClick={() => data.onNodeClick(data)}
+      onClick={() => data.onNodeClick()}
       style={{
-        background: 'var(--bg-secondary)',
-        border: `1px solid ${selected ? 'var(--accent-cyan)' : '#1e293b'}`,
+        background: '#14161e',
+        border: `1px solid ${selected ? '#00f2ff' : '#1e293b'}`,
         borderLeft: `4px solid ${accuracyColor}`,
         borderRadius: '4px',
         padding: '10px 12px',
@@ -46,42 +42,39 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         fontFamily: 'var(--font-mono)',
         fontSize: '11px',
         cursor: 'pointer',
-        boxShadow: selected ? '0 0 16px rgba(0,242,255,0.3)' : '0 4px 12px rgba(0,0,0,0.4)',
+        boxShadow: selected ? '0 0 16px rgba(0,242,255,0.3)' : '0 4px 12px rgba(0,0,0,0.5)',
         transition: 'all 0.2s ease',
+        position: 'relative',
       }}
     >
-      {/* Top handle — receives connection from previous epoch */}
-      <Handle id="top" type="target" position={Position.Top}
-        style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
+      {/* top — receives from previous epoch's bottom */}
+      {!isFirstInSeq && (
+        <Handle id="top" type="target" position={Position.Top}
+          style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
+      )}
 
-      {/* Left handle — receives connection from timeline (visual only) */}
-      <Handle id="left" type="target" position={Position.Left}
-        style={{ background: '#334155', opacity: 0 }} />
+      {/* bottom — sends to next epoch's top */}
+      {!isLastInSeq && (
+        <Handle id="bottom" type="source" position={Position.Bottom}
+          style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
+      )}
 
-      {/* Right handle — sends connection to first step when expanded */}
+      {/* right — sends to first step node when expanded */}
       <Handle id="right" type="source" position={Position.Right}
         style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
 
-      {/* Header */}
+      {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-        <span style={{ color: 'var(--accent-cyan)', fontWeight: 700, fontSize: '12px' }}>
+        <span style={{ color: '#00f2ff', fontWeight: 700, fontSize: '12px' }}>
           EPOCH {data.epoch}
         </span>
         <button
-          onClick={(e) => { e.stopPropagation(); data.onToggleExpand(data.epoch); }}
+          onClick={e => { e.stopPropagation(); data.onToggleExpand(data.epoch); }}
           style={{
-            background: 'none',
-            border: '1px solid #1e293b',
-            borderRadius: '3px',
-            color: 'var(--text-secondary)',
-            cursor: 'pointer',
-            padding: '1px 4px',
-            display: 'flex',
-            alignItems: 'center',
-            gap: '3px',
-            fontSize: '9px',
+            background: 'none', border: '1px solid #1e293b', borderRadius: '3px',
+            color: '#94a3b8', cursor: 'pointer', padding: '1px 5px',
+            display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9px',
           }}
-          title={data.isExpanded ? 'Collapse steps' : `Expand ${data.childCount} steps`}
         >
           {data.isExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
           {data.childCount}
@@ -95,15 +88,13 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
             <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '3px' }}>
               <TrendingUp size={9} /> acc
             </span>
-            <span style={{ color: accuracyColor, fontWeight: 600 }}>
-              {accuracy.toFixed(2)}%
-            </span>
+            <span style={{ color: accuracyColor, fontWeight: 600 }}>{accuracy.toFixed(2)}%</span>
           </div>
         )}
         {loss != null && (
           <div style={{ display: 'flex', justifyContent: 'space-between' }}>
             <span style={{ color: '#64748b' }}>loss</span>
-            <span style={{ color: 'var(--text-primary)' }}>{loss.toFixed(4)}</span>
+            <span style={{ color: '#e0e6ed' }}>{loss.toFixed(4)}</span>
           </div>
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
@@ -115,10 +106,6 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
           </span>
         </div>
       </div>
-
-      {/* Bottom handle — sends connection to next epoch */}
-      <Handle id="bottom" type="source" position={Position.Bottom}
-        style={{ background: '#00f2ff', width: 8, height: 8, border: '2px solid #0a0b10' }} />
     </div>
   );
 };

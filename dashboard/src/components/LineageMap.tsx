@@ -1,46 +1,90 @@
 import React, { useState, useCallback, useEffect, useRef } from 'react';
 import ReactFlow, {
   Background, Controls, Handle, Position,
+  MarkerType,
   useNodesState, useEdgesState,
   type Node, type Edge, type NodeProps
 } from 'reactflow';
-import dagre from 'dagre';
 import 'reactflow/dist/style.css';
 import { type AuditPacket, type EpochSummary } from '../services/api';
 import EpochNode from './EpochNode';
 import { Shield } from 'lucide-react';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
-const EPOCH_W       = 220;
-const EPOCH_H       = 95;
-const STEP_W        = 175;
-const STEP_H        = 80;
-const STEP_GAP_X    = 20;   // horizontal gap between step nodes
-const STEP_GAP_Y    = 16;   // vertical gap between step rows
-const NODES_PER_ROW = 4;
-const GROUP_PAD     = 24;   // padding inside group container
-const EPOCH_TO_STEP_Y = 40; // gap between epoch header bottom and first step row
-const TIMELINE_X    = 60;   // x position of the vertical timeline bar
+// ─── Layout constants ─────────────────────────────────────────────────────────
+const EPOCH_W        = 220;
+const EPOCH_H        = 95;
+const STEP_W         = 175;
+const STEP_H         = 82;
+const NODES_PER_ROW  = 4;
+const STEP_GAP_X     = 28;   // horizontal gap between step nodes (same row)
+const STEP_GAP_Y     = 56;   // vertical gap between rows
+const STAGGER_X      = (STEP_W + STEP_GAP_X) / 2;  // half-step offset for stagger
+const GROUP_PAD_X    = 20;   // left/right padding inside group
+const GROUP_PAD_TOP  = 16;   // top padding inside group
+const GROUP_PAD_BOT  = 20;   // bottom padding inside group
+const TIMELINE_W     = 160;  // timeline column width
+const TIMELINE_TOP   = 40;   // canvas Y of the timeline node
 
-// ─── Step node ───────────────────────────────────────────────────────────────
+// ─── Arrow markers ────────────────────────────────────────────────────────────
+const ARROW_CYAN  = { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#00f2ff' };
+const ARROW_BLUE  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#38bdf8' };
+const ARROW_DASH  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#00f2ff' };
+
+// ─── Step node ────────────────────────────────────────────────────────────────
 interface StepNodeData {
   stepId: number;
   hash?: string;
   loss?: number;
   fullData: AuditPacket;
+  // Add these layout flags:
+  isFirstInSeq: boolean;
+  isLastInSeq: boolean;
+  isRowEnd: boolean;
+  isOddRow: boolean;
+  posInRow: number;
 }
 
 const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, selected }) => {
   const displayHash = data?.hash ? `${data.hash.substring(0, 10)}…` : 'N/A';
+  const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow } = data;
+
   return (
     <div className={`custom-node valid ${selected ? 'selected-node' : ''}`}
       style={{ width: STEP_W, cursor: 'pointer' }}>
-      {/* Left/Right handles for horizontal step→step flow within same row */}
-      <Handle type="target" position={Position.Left} id="left" style={{ background: '#334155' }} />
-      <Handle type="source" position={Position.Right} id="right" style={{ background: '#334155' }} />
-      {/* Top/Bottom handles for row-to-row connections */}
-      <Handle type="source" position={Position.Bottom} id="bottom" style={{ background: '#334155', left: '50%' }} />
-      <Handle type="target" position={Position.Top} id="top" style={{ background: '#334155', left: '50%' }} />
+      {/* Target: Receive from previous step (Left if L->R, Right if R->L) */}
+      <Handle 
+        id={isOddRow ? "right" : "left"}
+        type="target" 
+        position={isOddRow ? Position.Right : Position.Left}
+        style={{
+          visibility: (isFirstInSeq ||  posInRow == 0) ? 'hidden' : 'visible',
+          background: '#38bdf8' 
+        }} 
+      />
+
+      {/* Source: Move to next step (Left if R->L, Right if L->R) */}
+      {!isRowEnd && (
+        <Handle 
+          id={isOddRow ? "left" : "right"}
+          type="source" 
+          position={isOddRow ? Position.Left : Position.Right}
+          style={{
+            background: '#38bdf8'
+          }} 
+        />
+      )}
+
+      {/* Row Wrap: Source for snake turn (Bottom) */}
+      {isRowEnd && !isLastInSeq && (
+        <Handle id="bottom" type="source" position={Position.Bottom}
+          style={{ background: '#38bdf8' }} />
+      )}
+
+      {/* Row Wrap: Target for snake turn (Top) */}
+      {!isFirstInSeq && posInRow === 0 && (
+        <Handle id="top" type="target" position={Position.Top}
+          style={{ background: '#38bdf8' }} />
+      )}
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
         <div style={{ fontSize: '10px', color: '#94a3b8' }}>Hash: {displayHash}</div>
@@ -57,76 +101,64 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
   );
 };
 
-// ─── Group container node (purely visual — NOT using parentNode) ──────────────
-// We avoid ReactFlow's parentNode/extent system because it conflicts with
-// dagre-computed positions: the group gets moved by dagre but child absolute
-// coords are re-interpreted relative to the new group origin, causing overflow.
-// Instead, the group is just a visual backdrop drawn at an absolute position.
-interface EpochGroupData {
-  epoch: number;
-  label: string;
-}
+// ─── Group backdrop ───────────────────────────────────────────────────────────
+interface EpochGroupData { epoch: number; label: string }
 
 const EpochGroupNode = ({ data }: NodeProps<EpochGroupData>) => (
   <div style={{
     width: '100%', height: '100%',
-    background: 'rgba(0, 242, 255, 0.03)',
-    border: '1.5px dashed rgba(0, 242, 255, 0.15)',
-    borderRadius: '8px',
-    pointerEvents: 'none',
-    position: 'relative',
+    background: 'rgba(0,242,255,0.025)',
+    border: '1.5px dashed rgba(0,242,255,0.18)',
+    borderRadius: '8px', pointerEvents: 'none', position: 'relative',
   }}>
     <div style={{
       position: 'absolute', top: -20, left: 12,
-      fontSize: '9px', color: 'rgba(0, 242, 255, 0.4)',
+      fontSize: '10px', color: 'rgba(0,242,255,0.4)',
       fontWeight: 700, textTransform: 'uppercase', letterSpacing: '1.5px',
       fontFamily: 'var(--font-mono)',
-    }}>
-      {data.label}
-    </div>
+    }}>{data.label}</div>
   </div>
 );
 
-// ─── Timeline SVG overlay (rendered as a React Flow node) ────────────────────
+// ─── Timeline node ────────────────────────────────────────────────────────────
 interface TimelineNodeData {
   totalHeight: number;
+  // Each tick's y is RELATIVE to this node's top (already corrected for TIMELINE_TOP)
   ticks: { y: number; label: string; isActive: boolean }[];
 }
 
-const TIMELINE_W = 160; // wider to fit larger timestamp text
-
 const TimelineNode = ({ data }: NodeProps<TimelineNodeData>) => (
   <div style={{ width: TIMELINE_W, height: data.totalHeight, pointerEvents: 'none', position: 'relative' }}>
-    {/* Vertical bar — sits at x=TIMELINE_W-2 (right edge) so ticks point right */}
+    {/* Vertical bar on the right edge */}
     <div style={{
-      position: 'absolute', right: 0, top: 0, bottom: 0,
-      width: 2,
-      background: 'linear-gradient(to bottom, transparent, rgba(0,242,255,0.5) 8%, rgba(0,242,255,0.5) 92%, transparent)',
+      position: 'absolute', right: 0, top: 0, bottom: 0, width: 2,
+      background: 'linear-gradient(to bottom, transparent, rgba(0,242,255,0.5) 6%, rgba(0,242,255,0.5) 94%, transparent)',
     }} />
     {data.ticks.map((t, i) => (
-      <div key={i} style={{ position: 'absolute', top: t.y - 10, right: 0, display: 'flex', flexDirection: 'row-reverse', alignItems: 'center', gap: 0 }}>
-        {/* Diamond dot on bar */}
+      <div key={i} style={{
+        position: 'absolute',
+        top: t.y - 9,   // centre the 18px-tall tick row on t.y
+        right: 0,
+        display: 'flex', flexDirection: 'row-reverse', alignItems: 'center',
+      }}>
+        {/* Diamond dot on the bar */}
         <div style={{
           width: 10, height: 10, flexShrink: 0,
-          background: t.isActive ? '#00f2ff' : '#0f2233',
-          border: `2px solid ${t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.35)'}`,
-          transform: 'rotate(45deg)',
-          marginRight: -4,
+          background: t.isActive ? '#00f2ff' : '#0d2236',
+          border: `2px solid ${t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.4)'}`,
+          transform: 'rotate(45deg)', marginRight: -4, zIndex: 2,
         }} />
-        {/* Tick mark */}
+        {/* Horizontal tick line */}
         <div style={{
-          width: 16, height: 1.5, flexShrink: 0,
+          width: 14, height: 2, flexShrink: 0,
           background: t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.3)',
         }} />
-        {/* Timestamp label — right-aligned, larger font */}
+        {/* Timestamp label */}
         <span style={{
-          fontSize: '12px',
-          fontFamily: 'var(--font-mono)',
+          fontSize: '12px', fontFamily: 'var(--font-mono)',
           fontWeight: t.isActive ? 700 : 400,
           color: t.isActive ? '#00f2ff' : '#64748b',
-          whiteSpace: 'nowrap',
-          paddingRight: 8,
-          letterSpacing: '0.5px',
+          whiteSpace: 'nowrap', paddingRight: 10, letterSpacing: '0.4px',
         }}>{t.label}</span>
       </div>
     ))}
@@ -135,49 +167,75 @@ const TimelineNode = ({ data }: NodeProps<TimelineNodeData>) => (
 
 // ─── Layout helpers ───────────────────────────────────────────────────────────
 
-/** Compute the pixel size of an expanded epoch group */
-function computeGroupSize(childCount: number) {
-  const cols     = Math.min(childCount, NODES_PER_ROW);
-  const rows     = Math.ceil(childCount / NODES_PER_ROW);
-  const width    = GROUP_PAD * 2 + cols * STEP_W + (cols - 1) * STEP_GAP_X;
-  const height   = GROUP_PAD + EPOCH_H + EPOCH_TO_STEP_Y + rows * STEP_H + (rows - 1) * STEP_GAP_Y + GROUP_PAD;
-  return { width: Math.max(width, EPOCH_W + GROUP_PAD * 2), height };
+/**
+ * Staggered layout with vertical offset for odd columns
+ * Row gap is set to one node height (STEP_H)
+ */
+function staggeredPos(j: number, childCount: number, groupWidth: number) {
+  const cols = Math.min(childCount, NODES_PER_ROW);
+  const row = Math.floor(j / cols);
+  const posInRow = j % cols;
+  const isOddRow = row % 2 === 1;
+
+  // Snake flow: reverse physical column order on odd rows
+  const physCol = isOddRow ? (cols - 1 - posInRow) : posInRow;
+
+  // Center the row within the group container
+  const rowW = cols * STEP_W + (cols - 1) * STEP_GAP_X;
+  const startX = (groupWidth - rowW) / 2;
+
+  // Offset logic: Shift odd columns (1, 3, 5...) down by a half-step
+  // Note: physCol is used to ensure the visual "column" stays shifted regardless of snake direction
+  const columnOffset = (physCol % 2 === 1) ? (STEP_H / 2) : 0;
+
+  return {
+    x: startX + physCol * (STEP_W + STEP_GAP_X),
+    // Use STEP_H as the gap between rows
+    y: GROUP_PAD_TOP + row * (STEP_H + STEP_H) + columnOffset,
+    row,
+    isOddRow,
+    isRowEnd: posInRow === cols - 1 || j === childCount - 1,
+    isFirstInSeq: j === 0,
+    isLastInSeq: j === childCount - 1,
+    posInRow,
+  };
 }
 
-/** x/y of each step node relative to the group's top-left corner */
-function stepLocalPos(j: number, childCount: number, groupWidth: number) {
-  const cols  = Math.min(childCount, NODES_PER_ROW);
-  const col   = j % NODES_PER_ROW;
-  const row   = Math.floor(j / NODES_PER_ROW);
-  const totalStepWidth = cols * STEP_W + (cols - 1) * STEP_GAP_X;
-  const startX = (groupWidth - totalStepWidth) / 2;
-  return {
-    x: startX + col * (STEP_W + STEP_GAP_X),
-    y: GROUP_PAD + EPOCH_H + EPOCH_TO_STEP_Y + row * (STEP_H + STEP_GAP_Y),
-  };
+/** Group container pixel size */
+function computeGroupSize(childCount: number) {
+  const cols   = Math.min(childCount, NODES_PER_ROW);
+  const rows   = Math.ceil(childCount / NODES_PER_ROW);
+  // Width must fit one full even row + stagger doesn't overflow (odd row is shifted)
+  const rowW   = cols * STEP_W + (cols - 1) * STEP_GAP_X + STAGGER_X; // worst-case is odd row
+  const w      = GROUP_PAD_X * 2 + rowW;
+  const h      = GROUP_PAD_TOP + rows * STEP_H + (rows - 1) * STEP_GAP_Y + GROUP_PAD_BOT + (rows - 1) * (STEP_H / 2); // add max stagger offset for odd rows
+  return { width: Math.max(w, EPOCH_W + GROUP_PAD_X * 2), height: h };
 }
 
 const fmt = (iso: string) =>
   new Date(iso).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-interface LineageMapProps {
+export interface LineageMapProps {
   packets:        AuditPacket[];
   epochSummaries: EpochSummary[];
   selectedPacket: AuditPacket | EpochSummary | null;
   onNodeClick:    (data: AuditPacket | EpochSummary | null) => void;
 }
 
-const nodeTypes = { epoch: EpochNode, step: StepNode, epochGroup: EpochGroupNode, timeline: TimelineNode };
+const nodeTypes = {
+  epoch: EpochNode, step: StepNode,
+  epochGroup: EpochGroupNode, timeline: TimelineNode,
+};
 
-// ─── Main component ───────────────────────────────────────────────────────────
+// ─── Component ────────────────────────────────────────────────────────────────
 const LineageMap: React.FC<LineageMapProps> = ({
   packets, epochSummaries, selectedPacket, onNodeClick,
 }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [expandedEpochs, setExpandedEpochs] = useState<Set<number>>(new Set());
-  const lastStructureRef = useRef<string>('');
+  const lastKeyRef = useRef('');
 
   const toggleEpoch = useCallback((epoch: number) => {
     setExpandedEpochs(prev => {
@@ -188,10 +246,10 @@ const LineageMap: React.FC<LineageMapProps> = ({
   }, []);
 
   useEffect(() => {
-    const stepPackets = packets.filter(p => !('epoch' in p));
+    const stepPackets  = packets.filter(p => !('epoch' in p));
     const sortedEpochs = [...epochSummaries].sort((a, b) => a.epoch - b.epoch);
 
-    // Group steps by epoch
+    // Group step packets by epoch
     const stepsByEpoch: Record<number, AuditPacket[]> = {};
     sortedEpochs.forEach((ep, i) => {
       const lo = i === 0 ? 0 : sortedEpochs[i - 1].step_id + 1;
@@ -201,241 +259,191 @@ const LineageMap: React.FC<LineageMapProps> = ({
     const rfNodes: Node[] = [];
     const rfEdges: Edge[] = [];
 
-    // ══════════════════════════════════════════════════════════════════
-    // PLAIN MODE — no epoch data yet, simple horizontal step chain
-    // ══════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════
+    // PLAIN MODE — no epoch data, simple step chain
+    // ══════════════════════════════════════════════════
     if (!epochSummaries.length) {
       const sorted = [...stepPackets].sort((a, b) => a.step_id - b.step_id);
-      sorted.forEach(p => {
+      const ROW_W  = NODES_PER_ROW * STEP_W + (NODES_PER_ROW - 1) * STEP_GAP_X;
+
+      sorted.forEach((p, j) => {
+        const sp = staggeredPos(j, sorted.length, ROW_W + GROUP_PAD_X * 2);
         rfNodes.push({
           id: `step-${p.step_id}`, type: 'step',
-          position: { x: 0, y: 0 },
+          position: { x: sp.x, y: sp.y },
           selected: selectedPacket !== null && !('epoch' in selectedPacket)
             && (selectedPacket as AuditPacket).packet_hash === p.packet_hash,
           data: { stepId: p.step_id, hash: p.packet_hash, loss: p.runtime_data?.metrics?.loss, fullData: p },
         });
-      });
-      for (let i = 0; i < sorted.length - 1; i++) {
-        rfEdges.push({
-          id: `e-${sorted[i].step_id}-${sorted[i+1].step_id}`,
-          source: `step-${sorted[i].step_id}`, target: `step-${sorted[i+1].step_id}`,
-          animated: true, style: { stroke: '#00f2ff', strokeWidth: 1.5 },
-        });
-      }
-
-      // Simple dagre layout for plain mode
-      const g = new dagre.graphlib.Graph();
-      g.setGraph({ rankdir: 'LR', nodesep: 60, ranksep: 80 });
-      g.setDefaultEdgeLabel(() => ({}));
-      rfNodes.forEach(n => g.setNode(n.id, { width: STEP_W, height: STEP_H }));
-      rfEdges.forEach(e => g.setEdge(e.source, e.target));
-      dagre.layout(g);
-      rfNodes.forEach(n => {
-        const p = g.node(n.id);
-        n.position = { x: p.x - STEP_W / 2, y: p.y - STEP_H / 2 };
+        if (j === 0) return;
+        const prev   = sorted[j - 1];
+        const prevSp = staggeredPos(j - 1, sorted.length, ROW_W + GROUP_PAD_X * 2);
+        buildStepEdge(rfEdges, prev, p, prevSp, sp);
       });
 
-      const currentKey = JSON.stringify(rfNodes.map(n => n.id));
-      if (currentKey !== lastStructureRef.current) {
-        lastStructureRef.current = currentKey;
-        setNodes([...rfNodes]);
-        setEdges([...rfEdges]);
-      } else {
-        setNodes(cur => rfNodes.map(n => { const e = cur.find(c => c.id === n.id); return e ? { ...n, position: e.position } : n; }));
-        setEdges([...rfEdges]);
-      }
+      const key = JSON.stringify(rfNodes.map(n => n.id));
+      if (key !== lastKeyRef.current) { lastKeyRef.current = key; setNodes([...rfNodes]); }
+      else setNodes(cur => rfNodes.map(n => { const e = cur.find(c => c.id === n.id); return e ? { ...n, position: e.position } : n; }));
+      setEdges([...rfEdges]);
       return;
     }
 
-    // ══════════════════════════════════════════════════════════════════
+    // ══════════════════════════════════════════════════
     // EPOCH MODE — vertical timeline + expandable groups
     //
-    // Layout strategy:
-    //   1. For each epoch, compute its "slot height" (collapsed = EPOCH_H,
-    //      expanded = group height).
-    //   2. Stack epochs top-to-bottom with spacing, recording each epoch's
-    //      absolute Y centre.
-    //   3. All step nodes get absolute positions computed from the group
-    //      top-left — NO parentNode, so ReactFlow never re-interprets coords.
-    //   4. Add a timeline node on the left at x=TIMELINE_X.
-    // ══════════════════════════════════════════════════════════════════
+    // X columns (left → right):
+    //   [timeline 0..TIMELINE_W]  [epoch node]  [expanded group]
+    //
+    // Y alignment:
+    //   epochCentreY[ep] = absolute canvas Y of epoch node centre
+    //   Timeline tick y  = epochCentreY[ep] - TIMELINE_TOP  (relative to timeline node)
+    //   Epoch node y     = epochCentreY[ep] - EPOCH_H/2
+    //   → tick diamond at relative y == epoch node centre → perfect horizontal alignment
+    // ══════════════════════════════════════════════════
 
-    const TIMELINE_X    = 8;
-    const EPOCH_COL_X   = 220 + TIMELINE_W; // x-centre of epoch nodes (after timeline)
-    const EPOCH_SPACING = 50;               // vertical gap between epoch slots
+    const EPOCH_COL_CX  = TIMELINE_W + 8 + 40 + EPOCH_W / 2;   // x-centre of epoch column
+    const GROUP_LEFT_X  = EPOCH_COL_CX + EPOCH_W / 2 + 36;      // left edge of group
+    const EPOCH_SPACING = 60;
 
-    let cursorY = 60; // top of the first epoch slot
+    // Pass 1: compute each epoch's canvas-Y centre
+    let cursorY = TIMELINE_TOP + 20;
     const epochCentreY: Record<number, number> = {};
 
-    // Pass 1 — compute Y positions
-    sortedEpochs.forEach((ep) => {
+    sortedEpochs.forEach(ep => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
-      const slotH      = isExpanded ? computeGroupSize(children.length).height : EPOCH_H;
+      const slotH = isExpanded
+        ? Math.max(computeGroupSize(children.length).height, EPOCH_H)
+        : EPOCH_H;
       epochCentreY[ep.epoch] = cursorY + slotH / 2;
       cursorY += slotH + EPOCH_SPACING;
     });
 
-    const totalTimelineH = cursorY;
+    const totalH = cursorY + 20;
 
-    // Pass 2 — build nodes & edges
+    // Pass 2: build nodes & edges
     sortedEpochs.forEach((ep, i) => {
       const isExpanded = expandedEpochs.has(ep.epoch);
-      const children   = sortedEpochs ? stepsByEpoch[ep.epoch] ?? [] : [];
+      const children   = stepsByEpoch[ep.epoch] ?? [];
       const cy         = epochCentreY[ep.epoch];
       const isEpochSel = selectedPacket !== null && 'epoch' in selectedPacket && selectedPacket.epoch === ep.epoch;
 
-      if (!isExpanded) {
-        // ── Collapsed epoch node — Handle Top (incoming) + Bottom (outgoing) ──
-        rfNodes.push({
-          id: `epoch-${ep.epoch}`, type: 'epoch',
-          position: { x: EPOCH_COL_X - EPOCH_W / 2, y: cy - EPOCH_H / 2 },
-          selected: isEpochSel,
-          data: {
-            epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
-            metrics: ep.metrics, cid: ep.cid, txHash: ep.tx_hash,
-            timestamp: ep.timestamp, isExpanded,
-            childCount: children.length,
-            onToggleExpand: toggleEpoch,
-            onNodeClick: () => onNodeClick(ep),
-          },
-        });
-      } else {
-        // ── Expanded group — place group immediately to the right of epoch column ──
-        const sortedChildren = [...children].sort((a, b) => a.step_id - b.step_id);
-        const { width: gW, height: gH } = computeGroupSize(sortedChildren.length);
+      // Epoch node — always present in left column, vertically centred at cy
+      rfNodes.push({
+        id: `epoch-${ep.epoch}`, type: 'epoch',
+        position: { x: EPOCH_COL_CX - EPOCH_W / 2, y: cy - EPOCH_H / 2 },
+        selected: isEpochSel,
+        data: {
+          epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
+          metrics: ep.metrics, cid: ep.cid, txHash: ep.tx_hash,
+          timestamp: ep.timestamp, isExpanded, childCount: children.length,
+          onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
+          isFirstInSeq: i === 0,
+          isLastInSeq: i === sortedEpochs.length - 1,
+        },
+      });
 
-        // Group starts at the epoch column right edge + small gap
-        const groupX = EPOCH_COL_X + EPOCH_W / 2 + 32;
-        const groupY = cy - gH / 2;
-
-        rfNodes.push({
-          id: `epoch-group-${ep.epoch}`, type: 'epochGroup',
-          position: { x: groupX, y: groupY },
-          style: { width: gW, height: gH },
-          data: { epoch: ep.epoch, label: `Epoch ${ep.epoch} Lineage` },
-          selectable: false, draggable: false,
-        });
-
-        // Epoch header — placed at same vertical centre as group, left of group
-        rfNodes.push({
-          id: `epoch-${ep.epoch}`, type: 'epoch',
-          position: { x: EPOCH_COL_X - EPOCH_W / 2, y: cy - EPOCH_H / 2 },
-          selected: isEpochSel,
-          data: {
-            epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
-            metrics: ep.metrics, cid: ep.cid, txHash: ep.tx_hash,
-            timestamp: ep.timestamp, isExpanded,
-            childCount: sortedChildren.length,
-            onToggleExpand: toggleEpoch,
-            onNodeClick: () => onNodeClick(ep),
-          },
-        });
-
-        // Step nodes inside the group
-        const cols = Math.min(sortedChildren.length, NODES_PER_ROW);
-        sortedChildren.forEach((p, j) => {
-          const local = stepLocalPos(j, sortedChildren.length, gW);
-          const isStepSel = selectedPacket !== null && !('epoch' in selectedPacket)
-            && (selectedPacket as AuditPacket).packet_hash === p.packet_hash;
-          const col = j % NODES_PER_ROW;
-          const row = Math.floor(j / NODES_PER_ROW);
-          const isLastInRow = col === cols - 1 || j === sortedChildren.length - 1;
-          const isFirstInRow = col === 0;
-
-          rfNodes.push({
-            id: `step-${p.step_id}`, type: 'step',
-            position: { x: groupX + local.x, y: groupY + local.y },
-            selected: isStepSel,
-            data: { stepId: p.step_id, hash: p.packet_hash, loss: p.runtime_data?.metrics?.loss, fullData: p },
-          });
-
-          if (j === 0) {
-            // Epoch → first step: horizontal (epoch right → step left)
-            rfEdges.push({
-              id: `es-${ep.epoch}-${p.step_id}`,
-              source: `epoch-${ep.epoch}`, sourceHandle: 'right',
-              target: `step-${p.step_id}`,  targetHandle: 'left',
-              style: { stroke: '#00f2ff', strokeWidth: 1.5, strokeDasharray: '5 4' },
-            });
-          } else {
-            const prev = sortedChildren[j - 1];
-            const prevCol = (j - 1) % NODES_PER_ROW;
-            const prevIsLastInRow = prevCol === cols - 1 || j - 1 === sortedChildren.length - 1;
-
-            if (!isFirstInRow) {
-              // Same row: horizontal right→left connection
-              rfEdges.push({
-                id: `ss-${prev.step_id}-${p.step_id}`,
-                source: `step-${prev.step_id}`, sourceHandle: 'right',
-                target: `step-${p.step_id}`,   targetHandle: 'left',
-                animated: true,
-                style: { stroke: '#38bdf8', strokeWidth: 1.5 },
-              });
-            } else {
-              // Row wrap: last in prev row → first in new row via bottom→top
-              rfEdges.push({
-                id: `ss-${prev.step_id}-${p.step_id}`,
-                source: `step-${prev.step_id}`, sourceHandle: 'bottom',
-                target: `step-${p.step_id}`,   targetHandle: 'top',
-                animated: true,
-                style: { stroke: '#38bdf8', strokeWidth: 1.5 },
-              });
-            }
-          }
-        });
-      }
-
-      // ── Epoch → Epoch edge: Bottom of prev → Top of next (straight vertical) ──
+      // Epoch → Epoch edge (bottom → top, vertical)
       if (i > 0) {
-        const prev = sortedEpochs[i - 1];
         rfEdges.push({
-          id: `ee-${prev.epoch}-${ep.epoch}`,
-          source: `epoch-${prev.epoch}`, sourceHandle: 'bottom',
-          target: `epoch-${ep.epoch}`,   targetHandle: 'top',
-          animated: true,
+          id: `ee-${sortedEpochs[i-1].epoch}-${ep.epoch}`,
+          source: `epoch-${sortedEpochs[i-1].epoch}`, sourceHandle: 'bottom',
+          target: `epoch-${ep.epoch}`,               targetHandle: 'top',
+          animated: true, markerEnd: ARROW_CYAN,
           style: { stroke: '#00f2ff', strokeWidth: 2 },
           type: 'smoothstep',
         });
       }
+
+      if (!isExpanded) return;
+
+      // ── Expanded group ────────────────────────────────────────────────
+      const sortedChildren = [...children].sort((a, b) => a.step_id - b.step_id);
+      const { width: gW, height: gH } = computeGroupSize(sortedChildren.length);
+
+      // Group top-aligns with epoch node top
+      const groupY = cy - EPOCH_H / 2;
+      const groupX = GROUP_LEFT_X;
+
+      rfNodes.push({
+        id: `epoch-group-${ep.epoch}`, type: 'epochGroup',
+        position: { x: groupX, y: groupY },
+        style: { width: gW, height: gH },
+        data: { epoch: ep.epoch, label: `Epoch ${ep.epoch} steps` },
+        selectable: false, draggable: false,
+      });
+
+      // Epoch right → first step left
+      rfEdges.push({
+        id: `es-${ep.epoch}-${sortedChildren[0].step_id}`,
+        source: `epoch-${ep.epoch}`, sourceHandle: 'right',
+        target: `step-${sortedChildren[0].step_id}`, targetHandle: 'left',
+        markerEnd: ARROW_DASH,
+        style: { stroke: '#00f2ff', strokeWidth: 1.5, strokeDasharray: '5 4' },
+      });
+
+      // Step nodes with staggered positions + smart edges
+      sortedChildren.forEach((p, j) => {
+        const sp        = staggeredPos(j, sortedChildren.length, gW);
+        const isStepSel = selectedPacket !== null && !('epoch' in selectedPacket)
+          && (selectedPacket as AuditPacket).packet_hash === p.packet_hash;
+
+        rfNodes.push({
+          id: `step-${p.step_id}`, type: 'step',
+          position: { x: groupX + sp.x, y: groupY + sp.y },
+          selected: isStepSel,
+          data: { 
+            stepId: p.step_id, 
+            hash: p.packet_hash, 
+            loss: p.runtime_data?.metrics?.loss, 
+            fullData: p,
+            // Pass the layout properties from staggeredPos
+            isFirstInSeq: sp.isFirstInSeq,
+            isLastInSeq: sp.isLastInSeq,
+            isRowEnd: sp.isRowEnd,
+            isOddRow: sp.isOddRow,
+            posInRow: sp.posInRow
+          },
+        });
+
+        if (j === 0) return;
+
+        const prev   = sortedChildren[j - 1];
+        const prevSp = staggeredPos(j - 1, sortedChildren.length, gW);
+        buildStepEdge(rfEdges, prev, p, prevSp, sp);
+      });
     });
 
-    // ── Timeline node (leftmost column, spans full height) ────────────
+    // Timeline node
+    // tick.y is RELATIVE to the timeline node's canvas top (TIMELINE_TOP)
     const ticks = sortedEpochs.map(ep => ({
-      y: epochCentreY[ep.epoch],
+      y: epochCentreY[ep.epoch] - TIMELINE_TOP,
       label: fmt(ep.timestamp),
       isActive: selectedPacket !== null && 'epoch' in selectedPacket && selectedPacket.epoch === ep.epoch,
     }));
 
     rfNodes.push({
       id: 'timeline', type: 'timeline',
-      position: { x: 8, y: 40 },
-      data: { totalHeight: totalTimelineH, ticks },
+      position: { x: 8, y: TIMELINE_TOP },
+      data: { totalHeight: totalH, ticks },
       selectable: false, draggable: false,
       style: { width: TIMELINE_W },
     });
 
-    // ── Commit to ReactFlow ──────────────────────────────────────────
+    // Commit
     const currentKey = JSON.stringify({
       ids:      rfNodes.map(n => n.id),
       expanded: Array.from(expandedEpochs),
       session:  stepPackets.length > 0 ? stepPackets[0].session_id : 'none',
     });
-
-    if (currentKey !== lastStructureRef.current) {
-      lastStructureRef.current = currentKey;
+    if (currentKey !== lastKeyRef.current) {
+      lastKeyRef.current = currentKey;
       setNodes([...rfNodes]);
     } else {
-      // Structure unchanged — only update data (selection, metrics)
-      setNodes(cur =>
-        rfNodes.map(n => {
-          const existing = cur.find(c => c.id === n.id);
-          // Preserve user-dragged positions for non-locked nodes
-          return existing && !n.draggable === false
-            ? { ...n, position: existing.position }
-            : n;
-        })
-      );
+      setNodes(cur => rfNodes.map(n => {
+        const e = cur.find(c => c.id === n.id);
+        return (e && n.selectable !== false) ? { ...n, position: e.position } : n;
+      }));
     }
     setEdges([...rfEdges]);
 
@@ -444,19 +452,11 @@ const LineageMap: React.FC<LineageMapProps> = ({
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
-        nodes={nodes}
-        edges={edges}
-        nodeTypes={nodeTypes}
-        onNodesChange={onNodesChange}
-        onEdgesChange={onEdgesChange}
-        onNodeClick={(_, node) => {
-          if (node.type === 'step') onNodeClick(node.data.fullData);
-          // epoch clicks handled inside EpochNode via data.onNodeClick
-        }}
+        nodes={nodes} edges={edges} nodeTypes={nodeTypes}
+        onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
+        onNodeClick={(_, node) => { if (node.type === 'step') onNodeClick(node.data.fullData); }}
         onPaneClick={() => onNodeClick(null)}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
-        minZoom={0.2}
+        fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.1}
       >
         <Background color="#1e293b" gap={20} />
         <Controls />
@@ -464,5 +464,58 @@ const LineageMap: React.FC<LineageMapProps> = ({
     </div>
   );
 };
+
+// ─── Edge builder (shared between plain + epoch mode) ─────────────────────────
+function buildStepEdge(
+  rfEdges: Edge[],
+  prev: AuditPacket,
+  cur:  AuditPacket,
+  prevSp: ReturnType<typeof staggeredPos>,
+  curSp:  ReturnType<typeof staggeredPos>,
+) {
+  const id = `ss-${prev.step_id}-${cur.step_id}`;
+
+  if (curSp.row === prevSp.row) {
+    // ── Same row ──────────────────────────────────────────────────────────
+    // Even rows: L→R   prev.right → cur.left
+    // Odd  rows: R→L   prev.left  → cur.right  (because physCol decreases)
+    rfEdges.push({
+      id,
+      source: `step-${prev.step_id}`,
+      sourceHandle: prevSp.isOddRow ? 'left'  : 'right',
+      target: `step-${cur.step_id}`,
+      targetHandle: prevSp.isOddRow ? 'right' : 'left',
+      animated: true, markerEnd: ARROW_BLUE,
+      style: { stroke: '#38bdf8', strokeWidth: 1.5 },
+    });
+  } else {
+    // ── Row wrap (last of row N → first of row N+1) ───────────────────────
+    // In staggered snake:
+    //   Even row ends at the RIGHT side (physCol = cols-1)
+    //     → its last node's right handle connects DOWN to the
+    //       odd row's last node (also physCol = cols-1, staggered right)
+    //       via its top handle.
+    // This gives a short near-vertical drop between the two rightmost nodes.
+    //
+    //   Odd row ends at the LEFT side (physCol = 0)
+    //     → its last node's left handle connects DOWN to the
+    //       even row's first node (physCol = 0) via its top handle.
+    //
+    // Both cases: use bottom → top with smoothstep for a gentle curve.
+    rfEdges.push({
+      id,
+      source: `step-${prev.step_id}`,
+      sourceHandle: 'bottom',
+      target: `step-${cur.step_id}`,
+      targetHandle: 'top',
+      animated: true, markerEnd: ARROW_BLUE,
+      style: { stroke: '#38bdf8', strokeWidth: 1.5 },
+      type: 'smoothstep',
+    });
+  }
+}
+
+// Re-export type needed by App.tsx
+export type { EpochSummary } from '../services/api';
 
 export default LineageMap;
