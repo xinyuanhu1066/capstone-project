@@ -13,11 +13,11 @@ import { Shield } from 'lucide-react';
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const EPOCH_W        = 220;
 const EPOCH_H        = 52;
-const STEP_W         = 175;
+const STEP_W         = 100;
 const STEP_H         = 82;
 const NODES_PER_ROW  = 4;
 const STEP_GAP_X     = 28;   // horizontal gap between step nodes (same row)
-const STEP_GAP_Y     = 56;   // vertical gap between rows
+const STEP_GAP_Y     = 32;   // vertical gap between rows
 const STAGGER_X      = (STEP_W + STEP_GAP_X) / 2;  // half-step offset for stagger
 const GROUP_PAD_X    = 20;   // left/right padding inside group
 const GROUP_PAD_TOP  = 16;   // top padding inside group
@@ -49,7 +49,7 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
   const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow } = data;
 
   return (
-    <div className={`custom-node valid ${selected ? 'selected-node' : ''}`}
+    <div className={`custom-node ${selected ? 'selected-node' : ''}`}
       style={{ width: STEP_W, cursor: 'pointer' }}>
       {/* Target: Receive from previous step (Left if L->R, Right if R->L) */}
       <Handle 
@@ -87,12 +87,6 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
       )}
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
-        <div style={{ fontSize: '10px', color: '#94a3b8' }}>Hash: {displayHash}</div>
-        {data?.loss != null && (
-          <div style={{ fontSize: '10px', color: '#64748b' }}>
-            Loss: {Number(data.loss).toFixed(4)}
-          </div>
-        )}
         <div style={{ fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
           <Shield size={9} /> SECURED
         </div>
@@ -182,7 +176,7 @@ function staggeredPos(j: number, childCount: number, groupWidth: number) {
 
   // Center the row within the group container
   const rowW = cols * STEP_W + (cols - 1) * STEP_GAP_X;
-  const startX = (groupWidth - rowW) / 2;
+  const startX = (groupWidth - (rowW + STAGGER_X)) / 2 + GROUP_PAD_X;
 
   // Offset logic: Shift odd columns (1, 3, 5...) down by a half-step
   // Note: physCol is used to ensure the visual "column" stays shifted regardless of snake direction
@@ -191,7 +185,7 @@ function staggeredPos(j: number, childCount: number, groupWidth: number) {
   return {
     x: startX + physCol * (STEP_W + STEP_GAP_X),
     // Use STEP_H as the gap between rows
-    y: GROUP_PAD_TOP + row * (STEP_H + STEP_H) + columnOffset,
+    y: GROUP_PAD_TOP + row * (STEP_H + STEP_GAP_Y) + columnOffset,
     row,
     isOddRow,
     isRowEnd: posInRow === cols - 1 || j === childCount - 1,
@@ -208,7 +202,10 @@ function computeGroupSize(childCount: number) {
   // Width must fit one full even row + stagger doesn't overflow (odd row is shifted)
   const rowW   = cols * STEP_W + (cols - 1) * STEP_GAP_X + STAGGER_X; // worst-case is odd row
   const w      = GROUP_PAD_X * 2 + rowW;
-  const h      = GROUP_PAD_TOP + rows * STEP_H + (rows - 1) * STEP_GAP_Y + GROUP_PAD_BOT + (rows - 1) * (STEP_H / 2); // add max stagger offset for odd rows
+  const baseH = GROUP_PAD_TOP + (rows * STEP_H) + ((rows - 1) * STEP_GAP_Y);
+  const staggerComp = cols > 1 ? (STEP_H / 2) : 0;
+  const h = baseH + staggerComp + GROUP_PAD_BOT;
+  
   return { width: Math.max(w, EPOCH_W + GROUP_PAD_X * 2), height: h };
 }
 

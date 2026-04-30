@@ -1,6 +1,6 @@
 import React from 'react';
 import { Handle, Position } from 'reactflow';
-import { ChevronDown, ChevronRight, TrendingUp, Shield } from 'lucide-react';
+import { ChevronDown, ChevronRight, TrendingUp, Waypoints } from 'lucide-react';
 
 export interface EpochNodeData {
   epoch: number;
@@ -35,7 +35,6 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
       style={{
         background: '#14161e',
         border: `1px solid ${selected ? '#00f2ff' : '#1e293b'}`,
-        borderLeft: `4px solid ${accuracyColor}`,
         borderRadius: '4px',
         padding: '10px 12px',
         width: '220px',
@@ -68,17 +67,7 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         <span style={{ color: '#00f2ff', fontWeight: 700, fontSize: '12px' }}>
           EPOCH {data.epoch}
         </span>
-        <button
-          onClick={e => { e.stopPropagation(); data.onToggleExpand(data.epoch); }}
-          style={{
-            background: 'none', border: '1px solid #1e293b', borderRadius: '3px',
-            color: '#94a3b8', cursor: 'pointer', padding: '1px 5px',
-            display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9px',
-          }}
-        >
-          {data.isExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
-          {data.childCount}
-        </button>
+        
       </div>
 
       {/* Metrics */}
@@ -99,11 +88,19 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         )}
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
           <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '3px' }}>
-            <Shield size={9} /> CID
+            <Waypoints size={9} /> Steps
           </span>
-          <span style={{ color: '#475569', fontSize: '9px' }}>
-            {data.cid ? data.cid.substring(0, 10) + '…' : 'N/A'}
-          </span>
+          <button
+            onClick={e => { e.stopPropagation(); data.onToggleExpand(data.epoch); }}
+            style={{
+              background: 'none', border: '1px solid #1e293b', borderRadius: '3px',
+              color: '#94a3b8', cursor: 'pointer', padding: '1px 5px',
+              display: 'flex', alignItems: 'center', gap: '3px', fontSize: '9px',
+            }}
+          >
+            {data.isExpanded ? <ChevronDown size={10} /> : <ChevronRight size={10} />}
+            {data.childCount}
+          </button>
         </div>
       </div>
     </div>
