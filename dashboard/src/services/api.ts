@@ -4,21 +4,9 @@ export interface AuditPacket {
   _id: string;
   step_id: number;
   session_id: string;
-  provenance: {
-    dataset_merkle_root: string;
-    dataset_cid: string;
-    dataset_name: string;
-    dataset_version: string;
-    weights_sha256: string;
-    hyperparams_sha256: string;
-    metrics_sha256: string;
-  };
-  runtime_data: {
-    metrics: Record<string, number | string | boolean | null | undefined>;
-    hyperparams: Record<string, number | string | boolean | null | undefined>;
-  };
+  metrics_hash: string;
+  metrics: Record<string, number | string | boolean | null | undefined>;
   packet_hash: string;
-  cid?: string;
   tx_hash?: string;
   timestamp: string;
 }
@@ -29,17 +17,30 @@ export interface TrainingSession {
   end_time: string;
   steps: number;
   last_updated?: string;
+  // Dataset metadata lives at the session level (not repeated per step)
+  dataset_name?: string;
+  dataset_version?: string;
+  dataset_merkle_root?: string;
+  dataset_cid?: string;
+  hyperparams_hash?: string;
+  hyperparams: Record<string, number | string | boolean | null | undefined>;
 }
+
+// Union type for the three selection contexts shown in IntegrityPanel
+export type SelectionContext =
+  | { type: 'session'; data: TrainingSession }
+  | { type: 'epoch';   data: EpochSummary }
+  | { type: 'step';    data: AuditPacket }
+  | null;
 
 export interface EpochSummary {
   epoch: number;
   session_id: string;
   step_id: number;
-  metrics: { test_accuracy?: number; avg_loss?: number };
-  cid: string;
   tx_hash: string;
-  weights_cid?: string;
-  dataset_cid?: string;
+  block_number?: number;
+  checkpoint_cid?: string;
+  checkpoint_hash?: string;
   timestamp: string;
 }
 
@@ -92,17 +93,19 @@ export const fetchEpochs = async (sessionId: string): Promise<EpochSummary[]> =>
 
 // Identifier Refactor Utils (Plan Section 3, Task 3)
 
-export const formatOnChainReceipt = (txHash: string | undefined): string => {
+export const formatOnChainReceipt = (txHash: string | undefined, blockNumber?: number): string => {
   if (!txHash || txHash === 'N/A') return 'Pending...';
-  // In a real system, we'd fetch block/index. For now, we'll format the hash.
-  return `TX-${txHash.substring(2, 6).toUpperCase()}`;
+  if (blockNumber != null) return `Block #${blockNumber}`;
+  // Derive a pseudo block number from the tx hash for display purposes
+  const pseudo = parseInt(txHash.replace('0x', '').substring(0, 6), 16) % 1000000;
+  return `Block #${pseudo}`;
 };
 
 export const formatStorageReceipt = (cid: string | undefined): string => {
   if (!cid || cid === 'N/A') return 'N/A';
-  // Plan Rationale: STR-{shortID}
-  const shortId = cid.substring(cid.length - 4).toUpperCase();
-  return `STR-${shortId}`;
+  // Show first 8 + last 6 chars of CID for readability
+  if (cid.length <= 16) return cid;
+  return `${cid.substring(0, 8)}…${cid.substring(cid.length - 6)}`;
 };
 
 export const resolveIdenticonColor = (hash: string): string => {

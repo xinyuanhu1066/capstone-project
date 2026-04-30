@@ -1,7 +1,8 @@
 import hashlib
 import json
 import os
-from typing import List, Dict, Any, Union
+from typing import Any, Dict, List, Union
+
 
 class HashingEngine:
     """
@@ -16,10 +17,10 @@ class HashingEngine:
         """
         if isinstance(data, dict):
             # Ensure consistent serialization for dictionaries
-            data = json.dumps(data, sort_keys=True).encode('utf-8')
+            data = json.dumps(data, sort_keys=True).encode("utf-8")
         elif isinstance(data, str):
-            data = data.encode('utf-8')
-        
+            data = data.encode("utf-8")
+
         return hashlib.sha256(data).hexdigest()
 
     @staticmethod
@@ -45,50 +46,45 @@ class HashingEngine:
         while len(hashes) > 1:
             if len(hashes) % 2 != 0:
                 hashes.append(hashes[-1])
-            
+
             new_hashes = []
             for i in range(0, len(hashes), 2):
-                combined = hashes[i] + hashes[i+1]
-                new_hashes.append(hashlib.sha256(combined.encode('utf-8')).hexdigest())
+                combined = hashes[i] + hashes[i + 1]
+                new_hashes.append(hashlib.sha256(combined.encode("utf-8")).hexdigest())
             hashes = new_hashes
 
         return hashes[0]
 
-    def create_audit_packet(self, 
-                            step_id: int, 
-                            session_id: str,
-                            weights_hash: str, 
-                            hyperparams: Dict[str, Any], 
-                            metrics: Dict[str, Any], 
-                            dataset_merkle_root: str,
-                            weights_cid: str = None) -> Dict[str, Any]:
+    def create_audit_packet(
+        self,
+        step_id: int,
+        session_id: str,
+        metrics: Dict[str, Any] = {},
+        checkpoint_hash: str = "",
+        checkpoint_cid: Union[str, None] = None,
+    ) -> Dict[str, Any]:
         """
         Aggregation: Combine all hashes and raw metrics into an 'Audit Metadata Packet'.
         """
-        metrics_json = json.dumps(metrics, sort_keys=True)
-        metrics_hash = self.calculate_sha256(metrics_json)
-        
-        hyperparams_hash = self.calculate_sha256(hyperparams)
 
         packet = {
             "step_id": step_id,
             "session_id": session_id,
-            "provenance": {
-                "dataset_merkle_root": dataset_merkle_root,
-                "weights_sha256": weights_hash,
-                "hyperparams_sha256": hyperparams_hash,
-                "metrics_sha256": metrics_hash
-            },
-            "runtime_data": {
-                "metrics": metrics,
-                "hyperparams": hyperparams
-            }
         }
-        
-        if weights_cid:
-            packet["provenance"]["weights_cid"] = weights_cid
-        
+
+        if metrics:
+            metrics_json = json.dumps(metrics, sort_keys=True)
+            metrics_hash = self.calculate_sha256(metrics_json)
+            packet["metrics"] = metrics
+            packet["metrics_hash"] = metrics_hash
+
+        if checkpoint_hash:
+            packet["checkpoint_hash"] = checkpoint_hash
+
+        if checkpoint_cid:
+            packet["checkpoint_cid"] = checkpoint_cid
+
         # Final signature of the entire packet for integrity
         packet["packet_hash"] = self.calculate_sha256(packet)
-        
+
         return packet

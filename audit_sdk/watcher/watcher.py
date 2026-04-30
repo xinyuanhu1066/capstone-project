@@ -47,6 +47,7 @@ class TrainingWatcher:
         self.current_loss = 0.0
         self.current_epoch = 0
         self.hyperparams = {}
+        self.hyperparams_hash = ""
         
         # Risk Mitigation: Step-level metrics tracking for anomaly detection
         self.step_metrics: List[float] = []
@@ -206,38 +207,19 @@ class TrainingWatcher:
         self.current_epoch += 1
         epoch = self.current_epoch
 
-        # Capture weight snapshot for this epoch (Hash)
-        weights_hash = self._capture_weights_hash()
-        
         # Perform Full Checkpoint Persistence (As per plan Section 2.C)
         checkpoint_data = self._capture_full_checkpoint()
+        checkpoint_hash = hashlib.sha256(checkpoint_data).hexdigest() if checkpoint_data else ""
 
         self.epoch_buffer.put({
             "epoch": epoch,
             "step_id": self.global_step,
-            "weights_hash": weights_hash,
-            "loss": self.current_loss,
+            "checkpoint_hash": checkpoint_hash,
             "checkpoint": checkpoint_data
         })
 
         print(f"[Watcher] Epoch {epoch} boundary reached. Global Step: {self.global_step}")
         sys.stdout.flush()
-    
-    def _capture_weights_hash(self) -> str:
-        """Upgrade: Use raw binary buffers for weights_hash (As per plan Section 4)"""
-        if self._last_optimizer is None:
-            return "no-optimizer-captured"
-        
-        hasher = hashlib.sha256()
-        try:
-            for group in self._last_optimizer.param_groups:
-                for p in group['params']:
-                    # Hash raw binary data of the parameter tensor
-                    hasher.update(p.data.cpu().numpy().tobytes())
-        except Exception as e:
-            return f"error_hashing_weights_{str(e)}"
-            
-        return hasher.hexdigest()
 
     def _capture_full_checkpoint(self) -> Optional[bytes]:
         """Save full model weights to a binary buffer and compress with Zstd."""
@@ -265,9 +247,7 @@ class TrainingWatcher:
             return None
 
     def _capture_snapshot(self, optimizer):
-        """Standard step snapshot: Binary hash + metrics."""
-        weights_hash = self._capture_weights_hash()
-        
+        """Standard step snapshot: Binary hash + metrics."""        
         # Multi-step metrics for anomaly detection (Plan 3.B)
         metrics = {
             "loss": self.current_loss,
@@ -277,13 +257,12 @@ class TrainingWatcher:
 
         self.buffer.put({
             "step_id": self.global_step,
-            "weights_hash": weights_hash,
             "metrics": metrics,
-            "hyperparams": self.hyperparams
         })
 
     def configure(self, hyperparams: Dict[str, Any]):
         self.hyperparams.update(hyperparams)
+        self.hyperparams_hash = hashlib.sha256(str(sorted(self.hyperparams.items())).encode()).hexdigest()
 
     def _process_buffer(self):
         while self.is_running:
@@ -292,14 +271,8 @@ class TrainingWatcher:
                 audit_packet = self.hashing_engine.create_audit_packet(
                     step_id=data["step_id"],
                     session_id=self.session_id,
-                    weights_hash=data["weights_hash"],
-                    hyperparams=self.hyperparams,
-                    metrics=data["metrics"],
-                    dataset_merkle_root=self.dataset_merkle_root
+                    metrics=data["metrics"]
                 )
-                audit_packet["provenance"]["dataset_cid"] = self.dataset_cid
-                audit_packet["provenance"]["dataset_name"] = self.dataset_name
-                audit_packet["provenance"]["dataset_version"] = self.dataset_version
                 self._dispatch(audit_packet, PACKET_API_URL, level="Step")
                 self.buffer.task_done()
             except queue.Empty:
@@ -318,15 +291,9 @@ class TrainingWatcher:
                 epoch_packet = self.hashing_engine.create_audit_packet(
                     step_id=data["step_id"],
                     session_id=self.session_id,
-                    weights_hash=data["weights_hash"],
-                    hyperparams=self.hyperparams,
-                    metrics={"loss": data["loss"], "epoch": data["epoch"]},
-                    dataset_merkle_root=self.dataset_merkle_root,
-                    weights_cid=cid
+                    checkpoint_hash=data["checkpoint_hash"],
+                    checkpoint_cid=cid
                 )
-                epoch_packet["provenance"]["dataset_cid"] = self.dataset_cid
-                epoch_packet["provenance"]["dataset_name"] = self.dataset_name
-                epoch_packet["provenance"]["dataset_version"] = self.dataset_version
                 epoch_packet["packet_type"] = "epoch"
                 epoch_packet["epoch"] = data["epoch"]
 
@@ -413,5 +380,19 @@ class _SentinelIter:
 
 def init(dataset_dir: Optional[str] = None, step_interval: int = 100, hyperparams: Optional[Dict[str, Any]] = None, dataset_name: str = "Unknown"):
     watcher = TrainingWatcher(dataset_dir=dataset_dir, step_interval=step_interval, dataset_name=dataset_name)
-    if hyperparams: watcher.configure(hyperparams)
+    if hyperparams:
+        watcher.configure(hyperparams)
+    try:
+
+        payload = {
+            "dataset_name": watcher.dataset_name,
+            "dataset_version": watcher.dataset_version,
+            "dataset_merkle_root": watcher.dataset_merkle_root,
+            "dataset_cid": watcher.dataset_cid,
+            "hyperparams": watcher.hyperparams,
+            "hyperparams_hash": watcher.hyperparams_hash,
+        }
+        requests.post(f"{CONTROLLER_URL}/audit/sessions", json=payload, timeout=5)
+    except Exception as e:
+        print(f"[Watcher Error] Upload session meta data failed: {e}")
     return watcher
