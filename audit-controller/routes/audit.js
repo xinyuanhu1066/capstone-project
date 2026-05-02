@@ -1,6 +1,6 @@
 import express from 'express'
 import { getDB, getHelia } from '../services/orbitdb.js'
-import { anchorToBlockchain, getRecordFromBlockchain } from '../services/blockchain.js'
+import { startSession, syncProgress, completeSession, getSession } from '../services/blockchain.js'
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 
@@ -129,15 +129,12 @@ router.post('/packet', async (req, res) => {
     const cid = await db.put(auditEntry)
     console.log(`[Audit Controller] Audit stored | CID: ${cid}`)
 
-    // 2. Anchor the resulting CID to the Ganache smart contract
+    // 2. Anchor the resulting CID to the Ganache smart contract by updating session progress
     let txHash = 'N/A'
     try {
-        txHash = await anchorToBlockchain(
-            packet.step_id, 
-            cid, // We anchor the CID of the record that actually contains the data
-            packet.provenance.dataset_merkle_root
-        )
-        
+        // Use session-level anchoring: sync session latest packet hash
+        txHash = await syncProgress(packet.session_id, packet.packet_hash)
+
         // 3. Store the TX hash as a SEPARATE metadata entry or property
         // To keep the CID valid for verification, we store a secondary mapping
         const metaEntry = {
@@ -182,17 +179,28 @@ router.get('/verify/:stepId', async (req, res) => {
       return res.status(404).json({ error: 'Primary record not found in OrbitDB' })
     }
 
-    // 3. Get anchor from Blockchain
-    const blockchainRecord = await getRecordFromBlockchain(stepId)
+    // 3. Get session anchor from Blockchain
+    const sessionId = primaryRecord.value.session_id
+    const sessionOnChain = await getSession(sessionId)
 
-    if (blockchainRecord.timestamp === 0n) {
-      return res.status(404).json({ error: 'No anchor found on blockchain for this step' })
+    if (!sessionOnChain || !sessionOnChain.isActive) {
+      return res.status(404).json({ error: 'No active session anchor found on blockchain for this packet' })
     }
 
-    // 4. Compare integrity
-    // primaryRecord.hash is the CID of the data *exactly* as it was anchored
-    const cidMatches = primaryRecord.hash === blockchainRecord.orbitdbCid
-    const merkleMatches = primaryRecord.value.provenance.dataset_merkle_root === blockchainRecord.datasetMerkleRoot
+    // 4. Find local meta mapping (anchored CID and tx)
+    const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
+    const meta = metaRecords.find(m => m.value.packet_hash === primaryRecord.value.packet_hash)
+
+    const cidMatches = meta ? (primaryRecord.hash === meta.value.anchored_cid) : false
+
+    // Normalize hex strings for comparison (ensure 0x prefix, lowercase)
+    const normalize = (s) => {
+      if (!s) return s
+      const out = s.startsWith('0x') ? s : '0x' + s
+      return out.toLowerCase()
+    }
+
+    const merkleMatches = normalize(primaryRecord.value.provenance.dataset_merkle_root) === normalize(sessionOnChain.datasetMerkleRoot)
     const isValid = cidMatches && merkleMatches
 
     console.log(`[Audit Controller] Integrity Check Step ${stepId}: ${isValid ? 'PASSED' : 'FAILED'}`)
@@ -204,7 +212,8 @@ router.get('/verify/:stepId', async (req, res) => {
         cid_match: cidMatches,
         merkle_match: merkleMatches,
         local_cid: primaryRecord.hash,
-        blockchain_cid: blockchainRecord.orbitdbCid
+        anchored_cid: meta ? meta.value.anchored_cid : 'N/A',
+        chain_latest_hash: sessionOnChain.latestPacketHash
       }
     })
 
@@ -235,6 +244,16 @@ router.post('/sessions', async (req, res) => {
     }
     await db.put(metaEntry)
     console.log(`[Audit Controller] Session Meta stored | Session ID: ${packet.session_id}`)
+
+    // Also create on-chain session start anchor (if provided)
+    if (packet.dataset_merkle_root) {
+      try {
+        await startSession(packet.session_id, packet.dataset_merkle_root)
+        console.log('[Audit Controller] Session start anchored on-chain')
+      } catch (bcErr) {
+        console.warn('[Audit Controller] Failed to anchor session start on-chain:', bcErr.message)
+      }
+    }
 
     res.status(201).json({ 
       status: 'success', 
@@ -342,14 +361,10 @@ router.post('/epoch', async (req, res) => {
       `[Audit Controller] Epoch ${packet.epoch} stored | Session: ${packet.session_id} | CID: ${cid}`
     )
 
-    // Anchor epoch checkpoint to blockchain (same recordStep call — reuses existing contract)
+    // Anchor epoch checkpoint by syncing session progress
     let txHash = 'N/A'
     try {
-      txHash = await anchorToBlockchain(
-        packet.step_id,
-        cid,
-        packet.provenance?.dataset_merkle_root ?? ''
-      )
+      txHash = await syncProgress(packet.session_id, packet.packet_hash)
     } catch (bcError) {
       console.error('[Audit Controller] Epoch blockchain anchor failed:', bcError.message)
     }

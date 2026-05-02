@@ -1,65 +1,47 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
-/**
- * @title AI Training Provenance
- * @dev Stores mappings between training steps and their corresponding decentralized storage CIDs.
- */
-contract Provenance {
-    struct AuditRecord {
-        uint256 stepId;
-        string orbitdbCid;
-        string datasetMerkleRoot;
-        uint256 timestamp;
+/// @title AIIntegrityAudit
+/// @notice Anchors session-level integrity metadata for AI training provenance
+contract AIIntegrityAudit {
+    struct Session {
+        bytes32 datasetMerkleRoot; // merkle root of the training dataset used in this session
+        bytes32 latestPacketHash;  // hash of the latest data packet in OrbitDB
+        bool isActive;             // whether the session is initialized
+        bool isCompleted;          // whether the session is completed (locked from further modifications)
     }
 
-    // Mapping from step ID to its audit record
-    mapping(uint256 => AuditRecord) public records;
-    
-    // Array to keep track of all step IDs recorded
-    uint256[] public stepIds;
+    mapping(bytes32 => Session) public sessions;
 
-    event RecordAnchored(uint256 indexed stepId, string orbitdbCid, string datasetMerkleRoot);
+    event SessionStarted(bytes32 indexed sessionId, bytes32 merkleRoot);
+    event ProgressSynced(bytes32 indexed sessionId, bytes32 lastPacketHash);
+    event SessionCompleted(bytes32 indexed sessionId, bytes32 finalPacketHash);
 
-    /**
-     * @dev Anchors a new audit record to the blockchain.
-     * @param _stepId The unique ID of the training step.
-     * @param _orbitdbCid The CID of the audit packet stored in OrbitDB.
-     * @param _datasetMerkleRoot The Merkle Root of the dataset used in this step.
-     */
-    function anchorRecord(
-        uint256 _stepId, 
-        string memory _orbitdbCid, 
-        string memory _datasetMerkleRoot
-    ) public {
-        // Ensure we don't overwrite if it's already there (optional depending on logic)
-        // For now, we allow overwriting for simplicity in Phase 1
-        
-        if (records[_stepId].timestamp == 0) {
-            stepIds.push(_stepId);
-        }
-
-        records[_stepId] = AuditRecord({
-            stepId: _stepId,
-            orbitdbCid: _orbitdbCid,
-            datasetMerkleRoot: _datasetMerkleRoot,
-            timestamp: block.timestamp
-        });
-
-        emit RecordAnchored(_stepId, _orbitdbCid, _datasetMerkleRoot);
+    /// @notice Start a new training session and record the dataset Merkle root
+    function startSession(bytes32 _sessionId, bytes32 _merkleRoot) external {
+        require(!sessions[_sessionId].isActive, "Session already initialized");
+        sessions[_sessionId].datasetMerkleRoot = _merkleRoot;
+        sessions[_sessionId].isActive = true;
+        emit SessionStarted(_sessionId, _merkleRoot);
     }
 
-    /**
-     * @dev Returns the record for a specific step.
-     */
-    function getRecord(uint256 _stepId) public view returns (AuditRecord memory) {
-        return records[_stepId];
+    /// @notice Update the latest OrbitDB packet hash for an active session
+    function syncProgress(bytes32 _sessionId, bytes32 _lastPacketHash) external {
+        Session storage s = sessions[_sessionId];
+        require(s.isActive, "Session not active");
+        require(!s.isCompleted, "Session already completed");
+
+        s.latestPacketHash = _lastPacketHash;
+        emit ProgressSynced(_sessionId, _lastPacketHash);
     }
 
-    /**
-     * @dev Returns total number of records.
-     */
-    function getRecordsCount() public view returns (uint256) {
-        return stepIds.length;
+    /// @notice Complete the session and lock it from further updates
+    function completeSession(bytes32 _sessionId, bytes32 _finalPacketHash) external {
+        Session storage s = sessions[_sessionId];
+        require(s.isActive, "Session not active");
+
+        s.latestPacketHash = _finalPacketHash;
+        s.isCompleted = true;
+        emit SessionCompleted(_sessionId, _finalPacketHash);
     }
 }

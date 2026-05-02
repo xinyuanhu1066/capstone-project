@@ -1,26 +1,42 @@
 import { ethers } from 'ethers'
 
-// Configuration
-const GANACHE_URL = 'http://127.0.0.1:7545'
-const CONTRACT_ADDRESS = '0x700684D33AaE754A584A410da7657CEA5051806e'
-const PRIVATE_KEY = '0x01440d9f3a6aa5dc3c9aac4fa8a1910465dc4971c48025b244e4f163748a3b75'
+// Configuration (can be overridden by env vars)
+const GANACHE_URL = process.env.GANACHE_URL || 'http://127.0.0.1:7545'
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '0x700684D33AaE754A584A410da7657CEA5051806e'
+const PRIVATE_KEY = process.env.PRIVATE_KEY || '0x01440d9f3a6aa5dc3c9aac4fa8a1910465dc4971c48025b244e4f163748a3b75'
 
 const ABI = [
-  "function anchorRecord(uint256 _stepId, string memory _orbitdbCid, string memory _datasetMerkleRoot) public",
-  "function getRecord(uint256 _stepId) public view returns (tuple(uint256 stepId, string orbitdbCid, string datasetMerkleRoot, uint256 timestamp))",
-  "event RecordAnchored(uint256 indexed stepId, string orbitdbCid, string datasetMerkleRoot)"
+  "function startSession(bytes32 _sessionId, bytes32 _merkleRoot) external",
+  "function syncProgress(bytes32 _sessionId, bytes32 _lastPacketHash) external",
+  "function completeSession(bytes32 _sessionId, bytes32 _finalPacketHash) external",
+  "function sessions(bytes32) view returns (bytes32 datasetMerkleRoot, bytes32 latestPacketHash, bool isActive, bool isCompleted)",
+  "event SessionStarted(bytes32 indexed sessionId, bytes32 merkleRoot)",
+  "event ProgressSynced(bytes32 indexed sessionId, bytes32 lastPacketHash)",
+  "event SessionCompleted(bytes32 indexed sessionId, bytes32 finalPacketHash)"
 ]
 
 let provider = null
 let wallet = null
 let contract = null
 
+const toBytes32Hex = (h) => {
+  if (!h) return '0x' + '0'.repeat(64)
+  return h.startsWith('0x') ? h : '0x' + h
+}
+
+const sessionIdToBytes32 = (sid) => {
+  // If already a 0x-prefixed 32-byte hex, return as-is, otherwise keccak256-hash the identifier to get a bytes32
+  if (!sid) return ethers.ZeroHash
+  if (sid.startsWith('0x') && sid.length === 66) return sid
+  return ethers.id(sid)
+}
+
 export const initBlockchain = async () => {
   try {
     provider = new ethers.JsonRpcProvider(GANACHE_URL)
     wallet = new ethers.Wallet(PRIVATE_KEY, provider)
     contract = new ethers.Contract(CONTRACT_ADDRESS, ABI, wallet)
-    
+
     console.log('[Blockchain Service] Connected to Ganache. Wallet:', await wallet.getAddress())
     return { contract, wallet }
   } catch (error) {
@@ -29,23 +45,42 @@ export const initBlockchain = async () => {
   }
 }
 
-export const anchorToBlockchain = async (stepId, orbitdbCid, datasetMerkleRoot) => {
+export const startSession = async (sessionId, merkleRootHex) => {
   if (!contract) throw new Error('Blockchain service not initialized')
-
-  try {
-    console.log(`[Blockchain Service] Anchoring step ${stepId} to smart contract...`)
-    const tx = await contract.anchorRecord(stepId, orbitdbCid, datasetMerkleRoot)
-    const receipt = await tx.wait()
-    
-    console.log(`[Blockchain Service] Transaction confirmed! Hash: ${receipt.hash}`)
-    return receipt.hash
-  } catch (error) {
-    console.error('[Blockchain Service Error] Anchoring failed:', error)
-    throw error
-  }
+  const sid = sessionIdToBytes32(sessionId)
+  const mr = toBytes32Hex(merkleRootHex)
+  const tx = await contract.startSession(sid, mr)
+  const receipt = await tx.wait()
+  return receipt.hash
 }
 
-export const getRecordFromBlockchain = async (stepId) => {
+export const syncProgress = async (sessionId, lastPacketHashHex) => {
   if (!contract) throw new Error('Blockchain service not initialized')
-  return await contract.getRecord(stepId)
+  const sid = sessionIdToBytes32(sessionId)
+  const lh = toBytes32Hex(lastPacketHashHex)
+  const tx = await contract.syncProgress(sid, lh)
+  const receipt = await tx.wait()
+  return receipt.hash
+}
+
+export const completeSession = async (sessionId, finalPacketHashHex) => {
+  if (!contract) throw new Error('Blockchain service not initialized')
+  const sid = sessionIdToBytes32(sessionId)
+  const fh = toBytes32Hex(finalPacketHashHex)
+  const tx = await contract.completeSession(sid, fh)
+  const receipt = await tx.wait()
+  return receipt.hash
+}
+
+export const getSession = async (sessionId) => {
+  if (!contract) throw new Error('Blockchain service not initialized')
+  const sid = sessionIdToBytes32(sessionId)
+  const s = await contract.sessions(sid)
+  // s may be an array-like result
+  return {
+    datasetMerkleRoot: s.datasetMerkleRoot ?? s[0],
+    latestPacketHash: s.latestPacketHash ?? s[1],
+    isActive: s.isActive ?? s[2],
+    isCompleted: s.isCompleted ?? s[3]
+  }
 }

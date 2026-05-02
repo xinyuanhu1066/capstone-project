@@ -1,21 +1,22 @@
 import { expect } from "chai";
 import hre from "hardhat";
 
-describe("Provenance", function () {
-  it("Should anchor and retrieve a record", async function () {
-    const Provenance = await hre.ethers.getContractFactory("Provenance");
-    const provenance = await Provenance.deploy();
-    await provenance.waitForDeployment();
+describe("AIIntegrityAudit", function () {
+  it("Should start session, sync progress and retrieve session", async function () {
+    const Audit = await hre.ethers.getContractFactory("AIIntegrityAudit");
+    const audit = await Audit.deploy();
+    await audit.waitForDeployment();
 
-    const stepId = 1;
-    const cid = "zdpuAnjueKksZa3cqJtd4vPLtKHeTNcCtujTEyDMdFcqVUfKF";
-    const merkleRoot = "0x1234567890abcdef";
+    const sessionId = hre.ethers.id("session-1");
+    const merkleRoot = '0x' + '12'.repeat(32);
+    const packetHash = '0x' + '34'.repeat(32);
 
-    await provenance.anchorRecord(stepId, cid, merkleRoot);
+    await audit.startSession(sessionId, merkleRoot);
+    await audit.syncProgress(sessionId, packetHash);
 
-    const record = await provenance.getRecord(stepId);
-    expect(record.stepId).to.equal(stepId);
-    expect(record.orbitdbCid).to.equal(cid);
-    expect(record.datasetMerkleRoot).to.equal(merkleRoot);
+    const s = await audit.sessions(sessionId);
+    expect(s.datasetMerkleRoot).to.equal(merkleRoot);
+    expect(s.latestPacketHash).to.equal(packetHash);
+    expect(s.isActive).to.equal(true);
   });
 });
