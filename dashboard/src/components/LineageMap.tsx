@@ -45,7 +45,6 @@ interface StepNodeData {
 }
 
 const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, selected }) => {
-  const displayHash = data?.hash ? `${data.hash.substring(0, 10)}…` : 'N/A';
   const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow } = data;
 
   return (
@@ -251,6 +250,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
     sortedEpochs.forEach((ep, i) => {
       const lo = i === 0 ? 0 : sortedEpochs[i - 1].step_id + 1;
       stepsByEpoch[ep.epoch] = stepPackets.filter(p => p.step_id >= lo && p.step_id <= ep.step_id);
+      stepsByEpoch[ep.epoch].forEach((p) => p.epoch_id = ep.epoch);
     });
 
     const rfNodes: Node[] = [];
@@ -324,7 +324,10 @@ const LineageMap: React.FC<LineageMapProps> = ({
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
       const cy         = epochCentreY[ep.epoch];
-      const isEpochSel = selectedPacket !== null && 'epoch' in selectedPacket && selectedPacket.epoch === ep.epoch;
+      const isEpochSel = selectedPacket !== null && (
+        ('epoch' in selectedPacket && selectedPacket.epoch === ep.epoch) ||
+        ('epoch_id' in selectedPacket && selectedPacket.epoch_id === ep.epoch)
+      );
 
       // Epoch node — always present in left column, vertically centred at cy
       rfNodes.push({
@@ -333,7 +336,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
         selected: isEpochSel,
         data: {
           epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
-          metrics: ep.metrics, cid: ep.cid, txHash: ep.tx_hash,
+          cid: ep.checkpoint_cid, txHash: ep.tx_hash,
           timestamp: ep.timestamp, isExpanded, childCount: children.length,
           onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
           isFirstInSeq: i === 0,
@@ -391,9 +394,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
           position: { x: groupX + sp.x, y: groupY + sp.y },
           selected: isStepSel,
           data: { 
-            stepId: p.step_id, 
-            hash: p.packet_hash, 
-            loss: p.runtime_data?.metrics?.loss, 
+            stepId: p.step_id,
             fullData: p,
             // Pass the layout properties from staggeredPos
             isFirstInSeq: sp.isFirstInSeq,
@@ -417,7 +418,10 @@ const LineageMap: React.FC<LineageMapProps> = ({
     const ticks = sortedEpochs.map(ep => ({
       y: epochCentreY[ep.epoch] - TIMELINE_TOP,
       label: fmt(ep.timestamp),
-      isActive: selectedPacket !== null && 'epoch' in selectedPacket && selectedPacket.epoch === ep.epoch,
+      isActive: selectedPacket !== null && (
+        ('epoch' in selectedPacket && selectedPacket.epoch === ep.epoch) ||
+        ('epoch_id' in selectedPacket && selectedPacket.epoch_id === ep.epoch)
+      ),
     }));
 
     rfNodes.push({

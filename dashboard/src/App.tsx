@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import './styles/theme.css';
-import { fetchPackets, fetchSessions, fetchEpochs, type AuditPacket, type TrainingSession, type EpochSummary } from './services/api';
+import { fetchPackets, fetchSessions, fetchEpochs, type AuditPacket, type TrainingSession, type EpochSummary, type SelectionContext } from './services/api';
 import LineageMap from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
 import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
@@ -12,6 +12,8 @@ function App() {
   const [selectedPacket, setSelectedPacket] = useState<AuditPacket | EpochSummary | null>(null);
   const [loading, setLoading] = useState(true);
   const [epochSummaries, setEpochSummaries] = useState<EpochSummary[]>([]);
+  const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);
+  const [selectedSession, setSelectedSession] = useState<TrainingSession | null>(null); 
   
   // Use a ref to store the current session ID to avoid dependency cycle in loadData
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -28,6 +30,8 @@ function App() {
       if (!selectedSessionIdRef.current && sessionsData.length > 0) {
         selectedSessionIdRef.current = sessionsData[0].session_id;
         setSelectedSessionId(sessionsData[0].session_id);
+        setSelectedSession(sessionsData[0]);
+        setSelectionContext({ type: 'session', data: sessionsData[0] });
       }
 
       const sessionId = selectedSessionIdRef.current;
@@ -76,8 +80,11 @@ function App() {
     };
   }, [loadData]);
 
-  const handleSessionSelect = (sessionId: string) => {
-    if (sessionId === selectedSessionId) return;
+  const handleSessionSelect = (session: TrainingSession) => {
+    if (session.session_id === selectedSessionId) {
+      setSelectionContext({ type: 'session', data: selectedSession! });
+      return;
+    }
     
     // Clear selection but NOT the packets/epochs immediately to avoid flicker
     // They will be replaced when loadData completes for the new session
@@ -87,11 +94,23 @@ function App() {
     packetsRef.current = '';
     epochsRef.current = '';
     
-    selectedSessionIdRef.current = sessionId;
-    setSelectedSessionId(sessionId);
+    selectedSessionIdRef.current = session.session_id;
+    setSelectedSessionId(session.session_id);
+    setSelectedSession(session);
+    setSelectionContext({ type: 'session', data: session! });
     
     // Trigger immediate load
     loadData();
+  };
+
+  const handleNodeClick = (packet: AuditPacket | EpochSummary | null) => {
+    if (packet === null) {
+      setSelectedPacket(null);
+      setSelectionContext({ type: 'session', data: selectedSession! });
+    } else {
+      setSelectedPacket(packet);
+      setSelectionContext(null);
+    }
   };
 
   const formatTime = (isoString: string) => {
@@ -117,7 +136,7 @@ function App() {
               <div 
                 key={s.session_id} 
                 className={`activity-item ${selectedSessionId === s.session_id ? 'active' : ''}`}
-                onClick={() => handleSessionSelect(s.session_id)}
+                onClick={() => handleSessionSelect(s)}
               >
                 <div className="activity-id">{s.session_id.split('-').slice(0, 2).join('-')}...</div>
                 <div className="activity-time">{formatTime(s.start_time)}</div>
@@ -177,12 +196,12 @@ function App() {
             packets={packets} 
             epochSummaries={epochSummaries}
             selectedPacket={selectedPacket}
-            onNodeClick={setSelectedPacket} 
+            onNodeClick={handleNodeClick} 
           />
         )}
       </div>
 
-      <IntegrityPanel selectedPacket={selectedPacket} />
+      <IntegrityPanel selectionContext={selectionContext} selectedPacket={selectedPacket} />
     </div>
   );
 }

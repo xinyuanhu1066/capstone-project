@@ -214,6 +214,37 @@ router.get('/verify/:stepId', async (req, res) => {
   }
 })
 
+// POST /audit/sessions - Store session metadata
+router.post('/sessions', async (req, res) => {
+  try {
+    const packet = req.body
+    const db = getDB()
+
+    if (!db) {
+      return res.status(503).json({ error: 'Database not initialized' })
+    }
+
+    const metaEntry = {
+        _id: `meta-${packet.session_id}`,
+        dataset_name: packet.dataset_name,
+        dataset_version: packet.dataset_version,
+        dataset_merkle_root: packet.dataset_merkle_root,
+        dataset_cid: packet.dataset_cid,
+        hyperparams: packet.hyperparams,
+        hyperparams_hash: packet.hyperparams_hash,
+    }
+    await db.put(metaEntry)
+    console.log(`[Audit Controller] Session Meta stored | Session ID: ${packet.session_id}`)
+
+    res.status(201).json({ 
+      status: 'success', 
+    })
+  } catch (error) {
+    console.error('[Audit Controller Error] Failed to store session meta data:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
 // GET /audit/sessions - Retrieve unique training sessions
 router.get('/sessions', async (req, res) => {
   try {

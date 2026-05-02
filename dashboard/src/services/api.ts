@@ -4,6 +4,7 @@ export interface AuditPacket {
   _id: string;
   step_id: number;
   session_id: string;
+  epoch_id?: number;
   metrics_hash: string;
   metrics: Record<string, number | string | boolean | null | undefined>;
   packet_hash: string;
