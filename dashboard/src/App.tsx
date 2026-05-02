@@ -81,14 +81,12 @@ function App() {
   }, [loadData]);
 
   const handleSessionSelect = (session: TrainingSession) => {
+    setSelectedPacket(null);
+  
     if (session.session_id === selectedSessionId) {
       setSelectionContext({ type: 'session', data: selectedSession! });
       return;
     }
-    
-    // Clear selection but NOT the packets/epochs immediately to avoid flicker
-    // They will be replaced when loadData completes for the new session
-    setSelectedPacket(null);
     
     // Reset refs so the next load definitely triggers a state update
     packetsRef.current = '';
