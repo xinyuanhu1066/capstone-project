@@ -105,14 +105,13 @@ def main():
             train(model, DEVICE, train_loader, optimizer, epoch)
             test(model, DEVICE, test_loader)
     finally:
+        save_path = os.path.join(model_path, "mnist_model.pth")
+        torch.save(model.state_dict(), save_path)
+        print(f"Training complete. Model saved to {save_path}")
         # Ensure watcher stops and flushes its buffer
         print("Stopping Watcher...")
-        watcher.stop()
+        watcher.stop(save_path)
 
-    # Save the final model
-    save_path = os.path.join(model_path, "mnist_model.pth")
-    torch.save(model.state_dict(), save_path)
-    print(f"Training complete. Model saved to {save_path}")
 
 if __name__ == '__main__':
     main()

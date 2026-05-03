@@ -11,13 +11,12 @@ import time
 import io
 import hashlib
 import zstandard as zstd
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, Optional, List, Tuple
 from audit_sdk.hashing_engine.engine import HashingEngine
 
 # Configuration
 CONTROLLER_URL = os.getenv("AUDIT_CONTROLLER_URL", "http://localhost:3000")
 PACKET_API_URL = f"{CONTROLLER_URL}/audit/packet"
-EPOCH_API_URL = f"{CONTROLLER_URL}/audit/epoch"
 BLOB_API_URL = f"{CONTROLLER_URL}/audit/blob"
 
 class TrainingWatcher:
@@ -40,14 +39,12 @@ class TrainingWatcher:
         self.step_interval = step_interval
         self.hashing_engine = HashingEngine()
         self.buffer = queue.Queue()
-        self.epoch_buffer = queue.Queue()
         self.blob_buffer = queue.Queue()
         self.is_running = True
         self.global_step = 0
         self.current_loss = 0.0
         self.current_epoch = 0
         self.hyperparams = {}
-        self.hyperparams_hash = ""
         
         # Risk Mitigation: Step-level metrics tracking for anomaly detection
         self.step_metrics: List[float] = []
@@ -71,9 +68,6 @@ class TrainingWatcher:
         # Start background processing threads
         self.processor_thread = threading.Thread(target=self._process_buffer, daemon=True)
         self.processor_thread.start()
-        
-        self.epoch_processor_thread = threading.Thread(target=self._process_epoch_buffer, daemon=True)
-        self.epoch_processor_thread.start()
 
         self.blob_processor_thread = threading.Thread(target=self._process_blob_buffer, daemon=True)
         self.blob_processor_thread.start()
@@ -209,10 +203,11 @@ class TrainingWatcher:
 
         # Perform Full Checkpoint Persistence (As per plan Section 2.C)
         checkpoint_data = self._capture_full_checkpoint()
-        checkpoint_hash = hashlib.sha256(checkpoint_data).hexdigest() if checkpoint_data else ""
+        checkpoint_hash = self.hashing_engine.calculate_sha256(checkpoint_data)
 
-        self.epoch_buffer.put({
-            "epoch": epoch,
+        self.buffer.put({
+            "type": "epoch",
+            "epoch_id": epoch,
             "step_id": self.global_step,
             "checkpoint_hash": checkpoint_hash,
             "checkpoint": checkpoint_data
@@ -256,49 +251,75 @@ class TrainingWatcher:
         self.step_metrics = [] # Reset for next interval
 
         self.buffer.put({
+            "type": "step",
             "step_id": self.global_step,
             "metrics": metrics,
         })
 
     def configure(self, hyperparams: Dict[str, Any]):
         self.hyperparams.update(hyperparams)
-        self.hyperparams_hash = hashlib.sha256(str(sorted(self.hyperparams.items())).encode()).hexdigest()
 
     def _process_buffer(self):
         while self.is_running:
             try:
                 data = self.buffer.get(timeout=1.0)
-                audit_packet = self.hashing_engine.create_audit_packet(
-                    step_id=data["step_id"],
-                    session_id=self.session_id,
-                    metrics=data["metrics"]
-                )
-                self._dispatch(audit_packet, PACKET_API_URL, level="Step")
-                self.buffer.task_done()
-            except queue.Empty:
-                continue
-    
-    def _process_epoch_buffer(self):
-        while self.is_running:
-            try:
-                data = self.epoch_buffer.get(timeout=1.0)
-                
-                # If we have a full checkpoint, upload it first to get the CID
-                cid = None
-                if data["checkpoint"]:
-                    cid = self._upload_blob(data["checkpoint"])
-                
-                epoch_packet = self.hashing_engine.create_audit_packet(
-                    step_id=data["step_id"],
-                    session_id=self.session_id,
-                    checkpoint_hash=data["checkpoint_hash"],
-                    checkpoint_cid=cid
-                )
-                epoch_packet["packet_type"] = "epoch"
-                epoch_packet["epoch"] = data["epoch"]
 
-                self._dispatch(epoch_packet, EPOCH_API_URL, level=f"Epoch {data['epoch']}")
-                self.epoch_buffer.task_done()
+                # Obtain latest packet hash from controller to link chain (may be empty)
+                prev_hash = self._get_latest_packet_hash(self.session_id)
+
+                if data["type"] == "session":
+                    level = "Session"
+                    if data["action"] == "start":
+                        payload = {
+                            "dataset_name": self.dataset_name,
+                            "dataset_version": self.dataset_version,
+                            "dataset_merkle_root": self.dataset_merkle_root,
+                            "dataset_cid": self.dataset_cid,
+                            "hyperparams": self.hyperparams,
+                        }
+                    elif data["action"] == "end":
+                        payload = {
+                            "model_cid": data["model_cid"],
+                            "model_hash": data["model_hash"],
+                        }
+                    else:
+                        self.buffer.task_done()
+                        continue
+                elif data["type"] == "epoch":
+                    level = f"Epoch {data['epoch_id']}"
+                    cid = None
+                    if data["checkpoint"]:
+                        cid = self._upload_blob(data["checkpoint"])
+                    payload = {
+                        "id": data["epoch_id"],
+                        "step_id": data["step_id"],
+                        "checkpoint_hash": data["checkpoint_hash"],
+                        "checkpoint_cid": cid,
+                    }
+                elif data["type"] == "step":
+                    level = "Step"
+                    payload = {
+                        "id": data["step_id"],
+                        "metrics": data["metrics"]
+                    }
+                else:
+                    self.buffer.task_done()
+                    continue
+                
+                packet, packet_hash = self._create_audit_packet(
+                    session_id=self.session_id,
+                    packet_type=data["type"],
+                    payload=payload,
+                    prev_hash=prev_hash,
+                    action=data.get("action", "")
+                )
+
+                self._dispatch(
+                    {"packet": packet, "packet_hash": packet_hash},
+                    PACKET_API_URL,
+                    level=level
+                )
+                self.buffer.task_done()
             except queue.Empty:
                 continue
 
@@ -327,32 +348,77 @@ class TrainingWatcher:
             print(f"[Watcher Error] Blob upload failed: {e}")
         return None
 
-    def _dispatch(self, packet: Dict[str, Any], url: str, level: str = ""):
+    def _get_latest_packet_hash(self, session_id: str) -> str:
+        """Query Audit Controller for the on-chain/latest packet hash for a session."""
         try:
-            response = requests.post(url, json=packet, timeout=5)
+            resp = requests.get(f"{CONTROLLER_URL}/audit/sessions/{session_id}", timeout=5)
+            if resp.status_code == 200:
+                data = resp.json()
+                # Support multiple key name formats returned by controller
+                for k in ["latestPacketHash", "latest_packet_hash", "latestPacketHash", "latest_packetHash"]:
+                    if isinstance(data.get(k), str) and data.get(k):
+                        return data.get(k)
+        except Exception:
+            pass
+        return ""
+
+    def _dispatch(self, payload: Dict[str, Any], url: str, level: str = ""):
+        try:
+            response = requests.post(url, json=payload, timeout=5)
             if response.status_code == 201:
                 res_data = response.json()
                 print(
-                    f"[Audit Log] {level} {packet.get('step_id','')} | "
-                    f"Hash: {packet['packet_hash'][:8]}... | CID: {res_data.get('cid', 'N/A')[:8]}..."
+                    f"[Audit Log] {level} {payload['packet']['payload'].get('step_id','')} | "
+                    f"Hash: {payload['packet_hash'][:10]}... | CID: {res_data.get('cid', 'N/A')[:10]}..."
                 )
             sys.stdout.flush()
         except Exception as e:
             print(f"[Watcher Error] dispatch to {url}: {e}")
 
-    def stop(self):
+    def _create_audit_packet(
+            self, session_id: str, packet_type: str,
+            payload: Dict[str, Any], prev_hash: str,
+            action: str="") -> Tuple[Dict[str, Any], str]:
+        packet = {
+            "session_id": session_id,
+            "type": packet_type,
+            "payload": payload,
+            "prev_hash": prev_hash,
+            "action": action
+        }
+        packet_hash = self.hashing_engine.calculate_sha256(packet)
+        return packet, packet_hash
+    
+    def stop(self, final_model_path: Optional[str] = None):
         """Risk Mitigation: Mandatory final capture (Plan 3.A)"""
         print("[Watcher] Training end detected. Capturing final state...")
-        if self._last_optimizer:
+
+        if self.global_step % self.step_interval != 0 and self._last_optimizer:
             self._capture_snapshot(self._last_optimizer)
         
+        if final_model_path and os.path.exists(final_model_path):
+            with open(final_model_path, 'rb') as f:
+                model_bytes = f.read()
+            
+            print(f"[Watcher] Uploading final model {final_model_path} to IPFS...")
+
+            model_cid = self._upload_blob(model_bytes)
+            model_hash = self.hashing_engine.calculate_sha256(model_bytes)
+
+            self.buffer.put({
+                "type": "session",
+                "action": "end",
+                "model_cid": model_cid,
+                "model_hash": model_hash
+            })
+
         # Flush buffers
-        timeout = time.time() + 5
+        timeout = time.time() + 10
         while not self.buffer.empty() and time.time() < timeout:
             time.sleep(0.1)
         
         self.is_running = False
-        for thread_name in ['processor_thread', 'epoch_processor_thread', 'blob_processor_thread']:
+        for thread_name in ['processor_thread', 'blob_processor_thread']:
             if hasattr(self, thread_name):
                 t = getattr(self, thread_name)
                 if t.is_alive():
@@ -382,17 +448,5 @@ def init(dataset_dir: Optional[str] = None, step_interval: int = 100, hyperparam
     watcher = TrainingWatcher(dataset_dir=dataset_dir, step_interval=step_interval, dataset_name=dataset_name)
     if hyperparams:
         watcher.configure(hyperparams)
-    try:
-
-        payload = {
-            "dataset_name": watcher.dataset_name,
-            "dataset_version": watcher.dataset_version,
-            "dataset_merkle_root": watcher.dataset_merkle_root,
-            "dataset_cid": watcher.dataset_cid,
-            "hyperparams": watcher.hyperparams,
-            "hyperparams_hash": watcher.hyperparams_hash,
-        }
-        requests.post(f"{CONTROLLER_URL}/audit/sessions", json=payload, timeout=5)
-    except Exception as e:
-        print(f"[Watcher Error] Upload session meta data failed: {e}")
+    watcher.buffer.put({"type": "session", "action": "start"})
     return watcher

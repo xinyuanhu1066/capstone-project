@@ -15,6 +15,9 @@ class HashingEngine:
         """
         Calculate SHA-256 hash of provided data.
         """
+        if not data:
+            return ""
+
         if isinstance(data, dict):
             # Ensure consistent serialization for dictionaries
             data = json.dumps(data, sort_keys=True).encode("utf-8")
@@ -54,37 +57,3 @@ class HashingEngine:
             hashes = new_hashes
 
         return hashes[0]
-
-    def create_audit_packet(
-        self,
-        step_id: int,
-        session_id: str,
-        metrics: Dict[str, Any] = {},
-        checkpoint_hash: str = "",
-        checkpoint_cid: Union[str, None] = None,
-    ) -> Dict[str, Any]:
-        """
-        Aggregation: Combine all hashes and raw metrics into an 'Audit Metadata Packet'.
-        """
-
-        packet = {
-            "step_id": step_id,
-            "session_id": session_id,
-        }
-
-        if metrics:
-            metrics_json = json.dumps(metrics, sort_keys=True)
-            metrics_hash = self.calculate_sha256(metrics_json)
-            packet["metrics"] = metrics
-            packet["metrics_hash"] = metrics_hash
-
-        if checkpoint_hash:
-            packet["checkpoint_hash"] = checkpoint_hash
-
-        if checkpoint_cid:
-            packet["checkpoint_cid"] = checkpoint_cid
-
-        # Final signature of the entire packet for integrity
-        packet["packet_hash"] = self.calculate_sha256(packet)
-
-        return packet
