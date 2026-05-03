@@ -7,12 +7,12 @@ const PRIVATE_KEY = process.env.PRIVATE_KEY || '0x01440d9f3a6aa5dc3c9aac4fa8a191
 
 const ABI = [
   "function startSession(bytes32 _sessionId, bytes32 _merkleRoot) external",
-  "function syncProgress(bytes32 _sessionId, bytes32 _lastPacketHash) external",
+  "function syncProgress(bytes32 _sessionId, bytes32 _packetHash, uint256 _stepId) external",
   "function completeSession(bytes32 _sessionId, bytes32 _finalPacketHash) external",
-  "function sessions(bytes32) view returns (bytes32 datasetMerkleRoot, bytes32 latestPacketHash, bool isActive, bool isCompleted)",
-  "event SessionStarted(bytes32 indexed sessionId, bytes32 merkleRoot)",
-  "event ProgressSynced(bytes32 indexed sessionId, bytes32 lastPacketHash)",
-  "event SessionCompleted(bytes32 indexed sessionId, bytes32 finalPacketHash)"
+  "function getSession(bytes32 _sessionId) external view returns (bytes32 datasetMerkleRoot, bytes32 latestPacketHash, bool isActive, bool isCompleted)",
+  "event SessionStarted(bytes32 indexed sessionId, bytes32 merkleRoot, uint256 timestamp)",
+  "event AuditAnchored(bytes32 indexed sessionId, bytes32 packetHash, uint256 stepId, uint256 timestamp)",
+  "event SessionCompleted(bytes32 indexed sessionId, bytes32 finalPacketHash, uint256 timestamp)"
 ]
 
 let provider = null
@@ -54,11 +54,11 @@ export const startSession = async (sessionId, merkleRootHex) => {
   return receipt.hash
 }
 
-export const syncProgress = async (sessionId, lastPacketHashHex) => {
+export const syncProgress = async (sessionId, lastPacketHashHex, stepId) => {
   if (!contract) throw new Error('Blockchain service not initialized')
   const sid = sessionIdToBytes32(sessionId)
   const lh = toBytes32Hex(lastPacketHashHex)
-  const tx = await contract.syncProgress(sid, lh)
+  const tx = await contract.syncProgress(sid, lh, stepId)
   const receipt = await tx.wait()
   return receipt.hash
 }

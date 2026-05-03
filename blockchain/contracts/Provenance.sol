@@ -30,8 +30,8 @@ contract AIIntegrityAudit {
     // When synchronizing training progress (Step or Epoch) is triggered
     event AuditAnchored(
         bytes32 indexed sessionId, 
-        string packetType,
         bytes32 packetHash, 
+        uint256 stepId,
         uint256 timestamp
     );
 
@@ -57,12 +57,12 @@ contract AIIntegrityAudit {
 
     /**
      * @dev Synchronize training progress (Step/Epoch Anchor)
-     * Distinguish between periodic aggregation and step metrics via the packetType parameter
+     * Distinguish between periodic aggregation and step metrics via the stepId parameter
      */
     function syncProgress(
         bytes32 _sessionId, 
         bytes32 _packetHash, 
-        string calldata _packetType
+        uint256 _stepId
     ) external {
         Session storage s = sessions[_sessionId];
         require(s.isActive, "Session not active");
@@ -70,7 +70,7 @@ contract AIIntegrityAudit {
         
         s.latestPacketHash = _packetHash;
 
-        emit AuditAnchored(_sessionId, _packetType, _packetHash, block.timestamp);
+        emit AuditAnchored(_sessionId, _packetHash, _stepId, block.timestamp);
     }
 
     /**
