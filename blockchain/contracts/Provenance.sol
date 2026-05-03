@@ -1,47 +1,102 @@
 // SPDX-License-Identifier: MIT
-pragma solidity ^0.8.24;
+pragma solidity ^0.8.0;
 
-/// @title AIIntegrityAudit
-/// @notice Anchors session-level integrity metadata for AI training provenance
+/**
+ * @title AIIntegrityAudit
+ * @dev An AI training audit contract designed for a unified event stream.
+ * Rich Event logic added, supporting multi-dimensional auditing through 
+ * transaction hash and sessionId.
+ */
 contract AIIntegrityAudit {
+    
     struct Session {
-        bytes32 datasetMerkleRoot; // merkle root of the training dataset used in this session
-        bytes32 latestPacketHash;  // hash of the latest data packet in OrbitDB
-        bool isActive;             // whether the session is initialized
-        bool isCompleted;          // whether the session is completed (locked from further modifications)
+        bytes32 datasetMerkleRoot; // The initial fingerprint of the dataset
+        bytes32 latestPacketHash;  // The hash of the latest data packet in OrbitDB
+        bool isActive;             // Whether the session is initialized
+        bool isCompleted;          // Whether the session is completed
     }
 
+    // Store Session states
     mapping(bytes32 => Session) public sessions;
 
-    event SessionStarted(bytes32 indexed sessionId, bytes32 merkleRoot);
-    event ProgressSynced(bytes32 indexed sessionId, bytes32 lastPacketHash);
-    event SessionCompleted(bytes32 indexed sessionId, bytes32 finalPacketHash);
 
-    /// @notice Start a new training session and record the dataset Merkle root
+    // When a training Session starts
+    event SessionStarted(
+        bytes32 indexed sessionId, 
+        bytes32 datasetMerkleRoot, 
+        uint256 timestamp
+    );
+
+    // When synchronizing training progress (Step or Epoch) is triggered
+    event AuditAnchored(
+        bytes32 indexed sessionId, 
+        string packetType,
+        bytes32 packetHash, 
+        uint256 timestamp
+    );
+
+    // When a training Session ends and is sealed
+    event SessionCompleted(
+        bytes32 indexed sessionId, 
+        bytes32 finalPacketHash, 
+        uint256 timestamp
+    );
+
+    /**
+     * @dev Session Start
+     */
     function startSession(bytes32 _sessionId, bytes32 _merkleRoot) external {
         require(!sessions[_sessionId].isActive, "Session already initialized");
+
         sessions[_sessionId].datasetMerkleRoot = _merkleRoot;
         sessions[_sessionId].isActive = true;
-        emit SessionStarted(_sessionId, _merkleRoot);
+        sessions[_sessionId].isCompleted = false;
+
+        emit SessionStarted(_sessionId, _merkleRoot, block.timestamp);
     }
 
-    /// @notice Update the latest OrbitDB packet hash for an active session
-    function syncProgress(bytes32 _sessionId, bytes32 _lastPacketHash) external {
+    /**
+     * @dev Synchronize training progress (Step/Epoch Anchor)
+     * Distinguish between periodic aggregation and step metrics via the packetType parameter
+     */
+    function syncProgress(
+        bytes32 _sessionId, 
+        bytes32 _packetHash, 
+        string calldata _packetType
+    ) external {
         Session storage s = sessions[_sessionId];
         require(s.isActive, "Session not active");
         require(!s.isCompleted, "Session already completed");
+        
+        s.latestPacketHash = _packetHash;
 
-        s.latestPacketHash = _lastPacketHash;
-        emit ProgressSynced(_sessionId, _lastPacketHash);
+        emit AuditAnchored(_sessionId, _packetType, _packetHash, block.timestamp);
     }
 
-    /// @notice Complete the session and lock it from further updates
+    /**
+     * @dev End training session and lock its state (Session End)
+     */
     function completeSession(bytes32 _sessionId, bytes32 _finalPacketHash) external {
         Session storage s = sessions[_sessionId];
         require(s.isActive, "Session not active");
-
+        require(!s.isCompleted, "Session already completed");
+        
         s.latestPacketHash = _finalPacketHash;
         s.isCompleted = true;
-        emit SessionCompleted(_sessionId, _finalPacketHash);
+
+        emit SessionCompleted(_sessionId, _finalPacketHash, block.timestamp);
+    }
+
+    /**
+     * @dev Helper function: Get session status
+     */
+    function getSession(bytes32 _sessionId) external view returns (
+        bytes32 datasetMerkleRoot,
+        bytes32 latestPacketHash,
+        bool isActive,
+        bool isCompleted
+    ) {
+        Session storage s = sessions[_sessionId];
+        return (s.datasetMerkleRoot, s.latestPacketHash, s.isActive, s.isCompleted);
     }
 }
