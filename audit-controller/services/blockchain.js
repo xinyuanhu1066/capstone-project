@@ -84,3 +84,26 @@ export const getSession = async (sessionId) => {
     isCompleted: s.isCompleted ?? s[3]
   }
 }
+
+export const getAnchorsFromChain = async (sessionId, blockHeight) => {
+  if (!contract) throw new Error('Blockchain service not initialized')
+
+  // 1. Define event filter for specific sessionId
+  const filter = contract.filters.AuditAnchored(sessionId)
+  
+  // 2. scan historical logs for this sessionId and blockHeight
+  const logs = await contract.queryFilter(filter, blockHeight)
+
+  const anchorMap = {}
+  logs.forEach(log => {
+    const { hash, stepId } = log.args
+    anchorMap[Number(stepId)] = hash
+  })
+
+  return anchorMap
+}
+
+export const getBlockHeight = () => {
+  const currentBlockHeight = await provider.getBlockNumber()
+  return currentBlockHeight
+}

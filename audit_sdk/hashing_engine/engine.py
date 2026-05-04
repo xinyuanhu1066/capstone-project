@@ -33,14 +33,29 @@ class HashingEngine:
         """
         if not file_paths:
             return ""
+        
+        valid_paths = [p for p in file_paths if os.path.isfile(p)]
+        if not valid_paths:
+            return ""
+        
+        if len(valid_paths) > 1:
+            common_prefix = os.path.commonpath(valid_paths)
+        else:
+            common_prefix = os.path.dirname(valid_paths[0])
+
+        path_mapping = []
+        for p in valid_paths:
+            rel_path = os.path.relpath(p, common_prefix)
+            path_mapping.append((rel_path, p))
+
+        path_mapping.sort(key=lambda x: x[0])
 
         # Initial leaf hashes
         hashes = []
-        for path in sorted(file_paths):
-            if os.path.isfile(path):
-                with open(path, "rb") as f:
-                    file_hash = hashlib.sha256(f.read()).hexdigest()
-                    hashes.append(file_hash)
+        for rel_p, abs_p in path_mapping:
+            with open(abs_p, "rb") as f:
+                file_hash = hashlib.sha256(f.read()).hexdigest()
+                hashes.append(file_hash)
 
         if not hashes:
             return ""
@@ -57,3 +72,23 @@ class HashingEngine:
             hashes = new_hashes
 
         return hashes[0]
+
+
+if __name__ == "__main__":
+    import argparse
+    parser = argparse.ArgumentParser(description="Hashing Engine for Audit SDK")
+    parser.add_argument("--rootdir", help="Root directory for calculating Merkle root")
+    args = parser.parse_args()
+    if args.rootdir:
+        if not os.path.exists(args.rootdir):
+            print("Root directory does not exist.")
+            exit(1)
+        file_paths = []
+        for root, _, files in os.walk(args.rootdir):
+            for file in files:
+                file_paths.append(os.path.join(root, file))
+        merkle_root = HashingEngine.calculate_merkle_root(file_paths)
+        print(merkle_root)
+    else:
+        print("No root directory provided. Exiting.")
+        exit(1)

@@ -3,6 +3,13 @@ import { getDB, getHelia } from '../services/orbitdb.js'
 import { startSession, syncProgress, completeSession, getSession } from '../services/blockchain.js'
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
+import { auditAllPackets } from '../tools/validity.js'
+import { getAnchorsFromChain, getBlockHeight } from '../services/blockchain.js'
+import { calculatePacketHash, verifyHashMatch, calculateDatasetMerkleRoot, calculateHashFromStream } from '../tools/hashlib.js'
+import { downloadDirectory } from '../tools/fs.js'
+import fs from 'fs';
+import path from 'path';
+import os from 'os';
 
 const router = express.Router()
 
@@ -111,7 +118,8 @@ router.post('/dataset/directory', async (req, res) => {
 // POST /audit/packet - Receive and store audit packet
 router.post('/packet', async (req, res) => {
   try {
-    const packet = req.body
+    const packet = req.body.packet
+    const packetHash = req.body.packet_hash
     const db = getDB()
 
     if (!db) {
@@ -120,41 +128,67 @@ router.post('/packet', async (req, res) => {
 
     // 1. Store the IMMUTABLE part in OrbitDB first to get the CID
     // We DO NOT include tx_hash here because it would change the CID later
+    let entryId = ""
+    let blockHeight = null
+    if (packet.type === 'session') {
+      entryId = `session-${packet.session_id}-${packet.action}`
+      if (packet.action === 'start') {
+        blockHeight = getBlockHeight()
+      }
+    } else if (packet.type === 'epoch' || packet.type === 'step') {
+      entryId = `session-${packet.session_id}-${packet.type}-${packet.payload.id}`
+    } else {
+      return res.status(400).json({ error: 'Invalid packet type' })
+    }
     const auditEntry = {
-      _id: packet.packet_hash,
-      ...packet,
+      _id: entryId,
+      packet: packet,
+      packet_hash: packetHash,
       timestamp: new Date().toISOString()
+    }
+    if (blockHeight) {
+      auditEntry.block_height = blockHeight
     }
 
     const cid = await db.put(auditEntry)
-    console.log(`[Audit Controller] Audit stored | CID: ${cid}`)
+    console.log(`[Audit Controller] Audit stored | ${entryId}`)
 
     // 2. Anchor the resulting CID to the Ganache smart contract by updating session progress
     let txHash = 'N/A'
     try {
-        // Use session-level anchoring: sync session latest packet hash
-        txHash = await syncProgress(packet.session_id, packet.packet_hash)
-
-        // 3. Store the TX hash as a SEPARATE metadata entry or property
-        // To keep the CID valid for verification, we store a secondary mapping
-        const metaEntry = {
-            _id: `meta-${packet.packet_hash}`,
-            packet_hash: packet.packet_hash,
-            tx_hash: txHash,
-            anchored_cid: cid
+      if (packet.type === 'session') {
+        if (packet.action === 'start') {
+          // For session start, we anchor the dataset merkle root
+          blockHeight = getBlockHeight()
+          txHash = await startSession(packet.session_id, packet.payload.dataset_merkle_root)
+        } else if (packet.action === 'end') {
+          // For session complete, we anchor the final packet hash
+          txHash = await completeSession(packet.session_id, packetHash)
         }
-        await db.put(metaEntry)
-        console.log(`[Audit Controller] Meta stored | TX: ${txHash}`)
-
+      } else {
+        // For steps and epochs, we anchor by syncing the latest packet hash to the session
+        const stepId = packet.type === 'step' ? packet.payload.id : packet.payload.step_id
+        txHash = await syncProgress(packet.session_id, packetHash, stepId)
+      }
+      // 3. Store the TX hash as a SEPARATE metadata entry or property
+      // To keep the CID valid for verification, we store a secondary mapping
+      const metaEntry = {
+        _id: `meta-${packetHash}`,
+        packet_hash: packetHash,
+        tx_hash: txHash,
+        cid: cid
+      }
+      await db.put(metaEntry)
+      console.log(`[Audit Controller] Meta stored | TX: ${txHash}`)
     } catch (bcError) {
-        console.error('[Audit Controller Error] Blockchain anchoring failed:', bcError.message)
+      console.error('[Audit Controller Error] Blockchain anchoring failed:', bcError.message)
     }
     
     res.status(201).json({ 
       status: 'success', 
       cid: cid,
       tx_hash: txHash,
-      packet_hash: packet.packet_hash 
+      packet_hash: packetHash
     })
   } catch (error) {
     console.error('[Audit Controller Error] Failed to store packet:', error)
@@ -162,58 +196,95 @@ router.post('/packet', async (req, res) => {
   }
 })
 
-// GET /audit/verify/:stepId - Verify local OrbitDB packet against Blockchain anchor
-router.get('/verify/:stepId', async (req, res) => {
+// GET /audit/verify/session/:id - Verify entire session integrity by comparing local records with blockchain anchor
+router.get('/verify/session/:id', async (req, res) => {
   try {
-    const stepId = parseInt(req.params.stepId)
+    const sessionId = req.params.id
     const db = getDB()
     if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
-    // 1. Get ALL records
-    const entries = await db.all()
-    
-    // 2. Find the primary audit record for this step
-    const primaryRecord = entries.find(e => e.value.step_id === stepId && !e.value._id.startsWith('meta-'))
-
-    if (!primaryRecord) {
-      return res.status(404).json({ error: 'Primary record not found in OrbitDB' })
-    }
-
-    // 3. Get session anchor from Blockchain
-    const sessionId = primaryRecord.value.session_id
     const sessionOnChain = await getSession(sessionId)
-
     if (!sessionOnChain || !sessionOnChain.isActive) {
-      return res.status(404).json({ error: 'No active session anchor found on blockchain for this packet' })
+      return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
     }
 
-    // 4. Find local meta mapping (anchored CID and tx)
-    const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
-    const meta = metaRecords.find(m => m.value.packet_hash === primaryRecord.value.packet_hash)
+    // get all packets for this session
+    const entries = await db.all()
+    const sessionPackets = entries.filter(e => e.value.packet.session_id === sessionId && !e.value._id.startsWith('meta-'))
 
-    const cidMatches = meta ? (primaryRecord.hash === meta.value.anchored_cid) : false
+    // sort packets by timestamp in reverse order
+    sessionPackets.sort((a, b) => new Date(b.value.timestamp).getTime() - new Date(a.value.timestamp).getTime())
 
-    // Normalize hex strings for comparison (ensure 0x prefix, lowercase)
-    const normalize = (s) => {
-      if (!s) return s
-      const out = s.startsWith('0x') ? s : '0x' + s
-      return out.toLowerCase()
+    const sessionEndAnchorHash = sessionOnChain.latestPacketHash
+    const calculatedHash = calculatePacketHash(sessionPackets[0].value.packet)
+    let modelValidityState = 'untrusted'
+
+    if (verifyHashMatch(calculatedHash, sessionEndAnchorHash)) {
+      modelValidityState = 'verified'
+    } else {
+      modelValidityState = 'invalid'
     }
 
-    const merkleMatches = normalize(primaryRecord.value.provenance.dataset_merkle_root) === normalize(sessionOnChain.datasetMerkleRoot)
-    const isValid = cidMatches && merkleMatches
+    const blockHeight = sessionPackets[sessionPackets.length].value.block_height
+    const chainAnchors = await getAnchorsFromChain(sessionId, blockHeight)
+    const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length), chainAnchors)
 
-    console.log(`[Audit Controller] Integrity Check Step ${stepId}: ${isValid ? 'PASSED' : 'FAILED'}`)
+    res.status(200).json({
+      modelValidation: modelValidityState,
+      stepsValidation: validityStates
+    })
+  } catch (error) {
+    console.error('[Audit Controller Error] Verification failed:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// GET /audit/verify/session/:sessionId/dataset - Verify dataset integrity by comparing local merkle root with blockchain anchor
+router.get('/verify/session/:sessionId/dataset', async (req, res) => {
+  try {
+    const { sessionId } = req.params
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    const entries = await db.all()
+    const sessionStartPacket = entries.find(e => 
+      e.value.packet.session_id === sessionId && 
+      e.value.packet.type === 'session' && 
+      e.value.packet.action === 'start'
+    )
+
+    if (!sessionStartPacket) {
+      return res.status(404).json({ error: 'Session start packet not found in OrbitDB' })
+    }
+
+    const sessionOnChain = await getSession(sessionId)
+    if (!sessionOnChain || !sessionOnChain.isActive) {
+      return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
+    }
+
+    const anchorMerkleRoot = sessionOnChain.datasetMerkleRoot
+  
+    // download dataset snapshot from IPFS using the CID in the session start packet
+    const datasetCid = sessionStartPacket.value.packet.payload.dataset_cid
+    const helia = getHelia()
+    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+    const heliaFs = unixfs(helia)
+
+    const tempDir = path.join(os.tmpdir(), `audit-${Date.now()}`);
+    fs.mkdirSync(tempDir);
+    await downloadDirectory(heliaFs, datasetCid, tempDir)
+
+    const calculatedMerkleRoot = calculateDatasetMerkleRoot(tempDir)
+    const isValid = verifyHashMatch(calculatedMerkleRoot, anchorMerkleRoot)
+
+    console.log(`[Audit Controller] Dataset Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
 
     res.json({
-      step_id: stepId,
       is_valid: isValid,
       details: {
-        cid_match: cidMatches,
-        merkle_match: merkleMatches,
-        local_cid: primaryRecord.hash,
-        anchored_cid: meta ? meta.value.anchored_cid : 'N/A',
-        chain_latest_hash: sessionOnChain.latestPacketHash
+        anchor_merkle_root: anchorMerkleRoot,
+        calculated_merkle_root: calculatedMerkleRoot,
+        dataset_cid: datasetCid
       }
     })
 
@@ -223,43 +294,90 @@ router.get('/verify/:stepId', async (req, res) => {
   }
 })
 
-// POST /audit/sessions - Store session metadata
-router.post('/sessions', async (req, res) => {
+// GET /audit/verify/session/:sessionId/model - Verify model weights integrity by comparing local hash with blockchain anchor
+router.get('/verify/session/:sessionId/model', async (req, res) => {
   try {
-    const packet = req.body
+    const { sessionId } = req.params
     const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
-    if (!db) {
-      return res.status(503).json({ error: 'Database not initialized' })
+    // find session end packet to get the final model hash
+    const entries = await db.all()
+    const sessionEndPacket = entries.find(e => 
+      e.value.packet.session_id === sessionId && 
+      e.value.packet.type === 'session' && 
+      e.value.packet.action === 'end'
+    )
+
+    if (!sessionEndPacket) {
+      return res.status(404).json({ error: 'Session end packet not found in OrbitDB' })
     }
 
-    const metaEntry = {
-        _id: `meta-${packet.session_id}`,
-        dataset_name: packet.dataset_name,
-        dataset_version: packet.dataset_version,
-        dataset_merkle_root: packet.dataset_merkle_root,
-        dataset_cid: packet.dataset_cid,
-        hyperparams: packet.hyperparams,
-        hyperparams_hash: packet.hyperparams_hash,
-    }
-    await db.put(metaEntry)
-    console.log(`[Audit Controller] Session Meta stored | Session ID: ${packet.session_id}`)
+    const targetModelHash = sessionEndPacket.value.packet.payload.model_hash
 
-    // Also create on-chain session start anchor (if provided)
-    if (packet.dataset_merkle_root) {
-      try {
-        await startSession(packet.session_id, packet.dataset_merkle_root)
-        console.log('[Audit Controller] Session start anchored on-chain')
-      } catch (bcErr) {
-        console.warn('[Audit Controller] Failed to anchor session start on-chain:', bcErr.message)
+    const modelCid = sessionEndPacket.value.packet.payload.model_cid
+    const helia = getHelia()
+    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+    const heliaFs = unixfs(helia)
+    const calculatedModelHash = await calculateHashFromStream(heliaFs, modelCid)
+    
+    const isValid = verifyHashMatch(calculatedModelHash, targetModelHash)
+    console.log(`[Audit Controller] Model Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
+
+    res.json({
+      is_valid: isValid,
+      details: {
+        target_model_hash: targetModelHash,
+        calculated_model_hash: calculatedModelHash,
+        model_cid: modelCid
       }
-    }
-
-    res.status(201).json({ 
-      status: 'success', 
     })
   } catch (error) {
-    console.error('[Audit Controller Error] Failed to store session meta data:', error)
+    console.error('[Audit Controller Error] Verification failed:', error)
+    res.status(500).json({ error: error.message })
+  }
+})
+
+// GET /audit/verify/session/:sessionId/epoch/:epochId/checkpoint - Verify specific epoch integrity by comparing local record with blockchain anchor
+router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, res) => {
+  try {
+    const { sessionId, epochId } = req.params
+    const db = getDB()
+    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+    // find the specific epoch packet
+    const entries = await db.all()
+    const epochPacket = entries.find(e => 
+      e.value.packet.session_id === sessionId && 
+      e.value.packet.type === 'epoch' && 
+      e.value.packet.payload.id === parseInt(epochId)
+    )
+
+    if (!epochPacket) {
+      return res.status(404).json({ error: 'Epoch packet not found in OrbitDB' })
+    }
+
+    const targetCheckpointHash = epochPacket.value.packet.payload.checkpoint_hash
+
+    const checkpointCid = epochPacket.value.packet.payload.checkpoint_cid
+    const helia = getHelia()
+    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+    const heliaFs = unixfs(helia)
+    const calculatedCheckpointHash = await calculateHashFromStream(heliaFs, checkpointCid)
+    
+    const isValid = verifyHashMatch(calculatedCheckpointHash, targetCheckpointHash)
+    console.log(`[Audit Controller] Epoch Checkpoint Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
+
+    res.json({
+      is_valid: isValid,
+      details: {
+        target_checkpoint_hash: targetCheckpointHash,
+        calculated_checkpoint_hash: calculatedCheckpointHash,
+        checkpoint_cid: checkpointCid
+      }
+    })
+  } catch (error) {
+    console.error('[Audit Controller Error] Verification failed:', error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -273,11 +391,11 @@ router.get('/sessions', async (req, res) => {
     const entries = await db.all()
     
     // Filter out meta records and get unique session IDs
-    const primaryRecords = entries.filter(e => e.value.session_id !== undefined && !e.value._id.startsWith('meta-'))
+    const primaryRecords = entries.filter(e => e.value.packet.session_id !== undefined && !e.value._id.startsWith('meta-'))
     
     const sessionsMap = {}
     primaryRecords.forEach(p => {
-        const sid = p.value.session_id
+        const sid = p.value.packet.session_id
         if (!sessionsMap[sid]) {
             sessionsMap[sid] = {
                 session_id: sid,
@@ -286,11 +404,15 @@ router.get('/sessions', async (req, res) => {
                 steps: 0
             }
         }
-        sessionsMap[sid].steps += 1
-        if (new Date(p.value.timestamp) < new Date(sessionsMap[sid].start_time)) {
+        if (p.value.packet.type === 'session' && p.value.packet.action === 'start') {
             sessionsMap[sid].start_time = p.value.timestamp
         }
-        if (new Date(p.value.timestamp) > new Date(sessionsMap[sid].end_time)) {
+        if (p.value.packet.type === 'epoch') {
+          if (p.value.packet.payload.step_id > sessionsMap[sid].steps) {
+            sessionsMap[sid].steps = p.value.packet.payload.step_id
+          }
+        }
+        if (p.value.packet.type === 'session' && p.value.packet.action === 'end') {
             sessionsMap[sid].end_time = p.value.timestamp
         }
     })
@@ -308,7 +430,7 @@ router.get('/sessions', async (req, res) => {
 // GET /audit/packets - Retrieve all audit packets (optionally filtered by session)
 router.get('/packets', async (req, res) => {
   try {
-    const { session_id } = req.query
+    const { sessionId } = req.query
     const db = getDB()
     if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
@@ -316,13 +438,12 @@ router.get('/packets', async (req, res) => {
     
     // We need to merge primary records with their metadata (tx_hash)
     let primaryRecords = entries.filter(e => 
-        e.value.step_id !== undefined && 
-        !e.value._id.startsWith('meta-') &&
-        e.value.packet_type !== 'epoch'
+        e.value.packet.type !== "session" && 
+        !e.value._id.startsWith('meta-')
     )
     
-    if (session_id) {
-        primaryRecords = primaryRecords.filter(e => e.value.session_id === session_id)
+    if (sessionId) {
+        primaryRecords = primaryRecords.filter(e => e.value.packet.session_id === sessionId)
     }
 
     const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
@@ -331,7 +452,7 @@ router.get('/packets', async (req, res) => {
         const meta = metaRecords.find(m => m.value.packet_hash === p.value.packet_hash)
         return {
             ...p.value,
-            cid: p.hash,
+            cid: meta ? meta.value.cid : 'N/A',
             tx_hash: meta ? meta.value.tx_hash : 'N/A'
         }
     })
@@ -342,76 +463,23 @@ router.get('/packets', async (req, res) => {
   }
 })
 
-// POST /audit/epoch - Receive and store epoch-level summary packet
-router.post('/epoch', async (req, res) => {
+// GET /audit/sessions/:sessionId - Return on-chain session info (dataset merkle root, latest packet hash, flags)
+router.get('/sessions/:sessionId', async (req, res) => {
   try {
-    const packet = req.body
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+    const sessionId = req.params.sessionId
+    const sessionOnChain = await getSession(sessionId)
+    if (!sessionOnChain)
+      return res.status(404).json({ error: 'Session not found on chain' })
 
-    const epochEntry = {
-      _id: `epoch-${packet.session_id}-${packet.epoch}`,
-      ...packet,
-      packet_type: 'epoch',
-      timestamp: new Date().toISOString(),
-    }
-
-    const cid = await db.put(epochEntry)
-    console.log(
-      `[Audit Controller] Epoch ${packet.epoch} stored | Session: ${packet.session_id} | CID: ${cid}`
-    )
-
-    // Anchor epoch checkpoint by syncing session progress
-    let txHash = 'N/A'
-    try {
-      txHash = await syncProgress(packet.session_id, packet.packet_hash)
-    } catch (bcError) {
-      console.error('[Audit Controller] Epoch blockchain anchor failed:', bcError.message)
-    }
-
-    res.status(201).json({ status: 'success', cid, tx_hash: txHash })
+    res.json({
+      session_id: sessionId,
+      datasetMerkleRoot: sessionOnChain.datasetMerkleRoot,
+      latestPacketHash: sessionOnChain.latestPacketHash,
+      isActive: sessionOnChain.isActive,
+      isCompleted: sessionOnChain.isCompleted,
+    })
   } catch (error) {
-    console.error('[Audit Controller Error] Failed to store epoch packet:', error)
-    res.status(500).json({ error: error.message })
-  }
-})
-
-// GET /audit/epochs?session_id=xxx - Return epoch summaries for a session
-// Used by the frontend to build the top-level DAG nodes
-router.get('/epochs', async (req, res) => {
-  try {
-    const { session_id } = req.query
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
-
-    const entries = await db.all()
-
-    let epochRecords = entries.filter(
-      (e) => e.value.packet_type === 'epoch'
-    )
-
-    if (session_id) {
-      epochRecords = epochRecords.filter(
-        (e) => e.value.session_id === session_id
-      )
-    }
-
-    const epochs = epochRecords
-      .map((e) => ({
-        epoch: e.value.epoch,
-        session_id: e.value.session_id,
-        step_id: e.value.step_id,
-        metrics: e.value.runtime_data?.metrics ?? e.value.metrics,
-        cid: e.hash,
-        tx_hash: e.value.tx_hash ?? 'N/A',
-        weights_cid: e.value.provenance?.weights_cid,
-        dataset_cid: e.value.provenance?.dataset_cid,
-        timestamp: e.value.timestamp,
-      }))
-      .sort((a, b) => a.epoch - b.epoch)
-
-    res.json(epochs)
-  } catch (error) {
+    console.error('[Audit Controller Error] Failed to fetch session on-chain info:', error)
     res.status(500).json({ error: error.message })
   }
 })
