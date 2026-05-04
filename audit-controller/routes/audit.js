@@ -449,10 +449,10 @@ router.get('/sessions', async (req, res) => {
   }
 })
 
-// GET /audit/packets - Retrieve all audit packets (optionally filtered by session)
-router.get('/packets', async (req, res) => {
+// GET /audit/session/:sessionId/packets - Retrieve all audit packets filtered by session
+router.get('/session/:sessionId/packets', async (req, res) => {
   try {
-    const { sessionId } = req.query
+    const sessionId = req.params.sessionId
     const db = getDB()
     if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
@@ -464,10 +464,8 @@ router.get('/packets', async (req, res) => {
       !e.value._id.startsWith('ds-') && 
       e.value.packet.type !== "session"
     )
-    
-    if (sessionId) {
-      primaryRecords = primaryRecords.filter(e => e.value.packet.session_id === sessionId)
-    }
+
+    primaryRecords = primaryRecords.filter(e => e.value.packet.session_id === sessionId)
 
     const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
 

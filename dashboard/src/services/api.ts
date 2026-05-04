@@ -60,7 +60,7 @@ export const fetchSessions = async (): Promise<SessionContext[]> => {
 
 export const fetchPackets = async (sessionId: string): Promise<StepContext[]> => {
   try {
-    const url = `${API_BASE_URL}/audit/packets?session_id=${sessionId}`;
+    const url = `${API_BASE_URL}/audit/session/${sessionId}/packets`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to fetch audit packets`);
     return await response.json();
