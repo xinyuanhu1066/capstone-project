@@ -220,7 +220,7 @@ router.get('/verify/session/:id', async (req, res) => {
 
     // get all packets for this session
     const entries = await db.all()
-    const sessionPackets = entries.filter(e => e.value.packet.session_id === sessionId && !e.value._id.startsWith('meta-'))
+    const sessionPackets = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id !== undefined)
 
     // sort packets by timestamp in reverse order
     sessionPackets.sort((a, b) => new Date(b.value.timestamp).getTime() - new Date(a.value.timestamp).getTime())
@@ -401,8 +401,8 @@ router.get('/sessions', async (req, res) => {
     const entries = await db.all()
     const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
 
-    // Filter out meta records and get unique session IDs
-    const primaryRecords = entries.filter(e => e.value.packet.session_id !== undefined && !e.value._id.startsWith('meta-'))
+    // Filter out meta and ds records and get unique session IDs
+    const primaryRecords = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id !== undefined)
     
     const sessionsMap = {}
     await Promise.all(primaryRecords.map(async (p) => {
@@ -460,8 +460,9 @@ router.get('/packets', async (req, res) => {
     
     // We need to merge primary records with their metadata (tx_hash)
     let primaryRecords = entries.filter(e => 
-      e.value.packet.type !== "session" && 
-      !e.value._id.startsWith('meta-')
+      !e.value._id.startsWith('meta-') && 
+      !e.value._id.startsWith('ds-') && 
+      e.value.packet.type !== "session"
     )
     
     if (sessionId) {
