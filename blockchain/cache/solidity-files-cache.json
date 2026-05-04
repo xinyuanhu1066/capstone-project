@@ -2,8 +2,8 @@
   "_format": "hh-sol-cache-2",
   "files": {
     "/Users/andy/Documents/GitHub/capstone-project/blockchain/contracts/Provenance.sol": {
-      "lastModificationDate": 1777705157132,
-      "contentHash": "f71d1f3427450298265a5fd170a9e427",
+      "lastModificationDate": 1777885756127,
+      "contentHash": "857cc2dc2750f831a0ad58ded43deebf",
       "sourceName": "contracts/Provenance.sol",
       "solcConfig": {
         "version": "0.8.24",
@@ -31,10 +31,10 @@
       },
       "imports": [],
       "versionPragmas": [
-        "^0.8.24"
+        "^0.8.0"
       ],
       "artifacts": [
-        "AIIntegrityAudit"
+        "Provenance"
       ]
     }
   }

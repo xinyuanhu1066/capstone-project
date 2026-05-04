@@ -2,12 +2,12 @@
 pragma solidity ^0.8.0;
 
 /**
- * @title AIIntegrityAudit
+ * @title Provenance Contract for AI Training Auditing
  * @dev An AI training audit contract designed for a unified event stream.
  * Rich Event logic added, supporting multi-dimensional auditing through 
  * transaction hash and sessionId.
  */
-contract AIIntegrityAudit {
+contract Provenance {
     
     struct Session {
         bytes32 datasetMerkleRoot; // The initial fingerprint of the dataset
