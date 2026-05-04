@@ -1,51 +1,53 @@
 const API_BASE_URL = 'http://localhost:3000';
 
-export interface AuditPacket {
-  _id: string;
-  step_id: number;
-  session_id: string;
-  epoch_id?: number;
-  metrics_hash: string;
-  metrics: Record<string, number | string | boolean | null | undefined>;
-  packet_hash: string;
-  tx_hash?: string;
-  timestamp: string;
-}
-
-export interface TrainingSession {
+export interface SessionContext {
   session_id: string;
   start_time: string;
   end_time: string;
   steps: number;
-  last_updated?: string;
-  // Dataset metadata lives at the session level (not repeated per step)
-  dataset_name?: string;
-  dataset_version?: string;
-  dataset_merkle_root?: string;
-  dataset_cid?: string;
-  hyperparams_hash?: string;
+  dataset_name: string;
+  dataset_version: string;
+  dataset_merkle_root: string;
+  dataset_cid: string;
   hyperparams: Record<string, number | string | boolean | null | undefined>;
+  model_cid: string;
+  model_hash: string;
+  start_block: number;
+  start_tx_hash: string;
+  end_block: number;
+  end_tx_hash: string;
 }
 
-// Union type for the three selection contexts shown in IntegrityPanel
-export type SelectionContext =
-  | { type: 'session'; data: TrainingSession }
-  | { type: 'epoch';   data: EpochSummary }
-  | { type: 'step';    data: AuditPacket }
-  | null;
+export interface StepContext {
+  step_id: number;
+  session_id: string;
+  epoch_id: number;
+  metrics: Record<string, number | string | boolean | null | undefined>;
+  block_number: number;
+  tx_hash: string;
+  timestamp: string;
+  cid: string;
+}
 
-export interface EpochSummary {
+export interface EpochContext {
   epoch: number;
   session_id: string;
   step_id: number;
   tx_hash: string;
-  block_number?: number;
-  checkpoint_cid?: string;
-  checkpoint_hash?: string;
+  block_number: number;
+  checkpoint_cid: string;
+  checkpoint_hash: string;
   timestamp: string;
 }
 
-export const fetchSessions = async (): Promise<TrainingSession[]> => {
+// Union type for the three selection contexts shown in IntegrityPanel
+export type SelectionContext =
+  | { type: 'session'; data: SessionContext }
+  | { type: 'epoch';   data: EpochContext }
+  | { type: 'step';    data: StepContext }
+  | null;
+
+export const fetchSessions = async (): Promise<SessionContext[]> => {
   try {
     const response = await fetch(`${API_BASE_URL}/audit/sessions`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to fetch sessions`);
@@ -56,11 +58,9 @@ export const fetchSessions = async (): Promise<TrainingSession[]> => {
   }
 };
 
-export const fetchPackets = async (sessionId?: string): Promise<AuditPacket[]> => {
+export const fetchPackets = async (sessionId: string): Promise<StepContext[]> => {
   try {
-    const url = sessionId 
-      ? `${API_BASE_URL}/audit/packets?session_id=${sessionId}`
-      : `${API_BASE_URL}/audit/packets`;
+    const url = `${API_BASE_URL}/audit/packets?session_id=${sessionId}`;
     const response = await fetch(url);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to fetch audit packets`);
     return await response.json();
@@ -70,24 +70,46 @@ export const fetchPackets = async (sessionId?: string): Promise<AuditPacket[]> =
   }
 };
 
-export const verifyStepIntegrity = async (stepId: number) => {
+export const verifyLineage = async (sessionId: number) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/audit/verify/${stepId}`);
+    const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
     return await response.json();
   } catch (error) {
-    console.error('[API Service Error] verifyStepIntegrity failed:', error);
+    console.error('[API Service Error] verifyLineage failed:', error);
     throw error;
   }
 };
 
-export const fetchEpochs = async (sessionId: string): Promise<EpochSummary[]> => {
+export const verifyDataset = async (sessionId: number) => {
   try {
-    const response = await fetch(`${API_BASE_URL}/audit/epochs?session_id=${sessionId}`);
-    if (!response.ok) throw new Error(`HTTP ${response.status}: Failed to fetch epochs`);
+    const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/dataset`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
     return await response.json();
   } catch (error) {
-    console.error('[API Service Error] fetchEpochs failed:', error);
+    console.error('[API Service Error] verifyDataset failed:', error);
+    throw error;
+  }
+};
+
+export const verifyModel = async (sessionId: number) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/model`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
+    return await response.json();
+  } catch (error) {
+    console.error('[API Service Error] verifyModel failed:', error);
+    throw error;
+  }
+};
+
+export const verifyCheckpoint = async (sessionId: number, epochId: number) => {
+  try {
+    const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/epoch/${epochId}/checkpoint`);
+    if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
+    return await response.json();
+  } catch (error) {
+    console.error('[API Service Error] verifyCheckpoint failed:', error);
     throw error;
   }
 };

@@ -4,7 +4,7 @@ import { startSession, syncProgress, completeSession, getSession } from '../serv
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import { auditAllPackets } from '../tools/validity.js'
-import { getAnchorsFromChain, getBlockHeight } from '../services/blockchain.js'
+import { getAnchorsFromChain, getBlockHeight, getBlockNumberByTxHash } from '../services/blockchain.js'
 import { calculatePacketHash, verifyHashMatch, calculateDatasetMerkleRoot, calculateHashFromStream } from '../tools/hashlib.js'
 import { downloadDirectory } from '../tools/fs.js'
 import fs from 'fs';
@@ -133,7 +133,7 @@ router.post('/packet', async (req, res) => {
     if (packet.type === 'session') {
       entryId = `session-${packet.session_id}-${packet.action}`
       if (packet.action === 'start') {
-        blockHeight = getBlockHeight()
+        blockHeight = await getBlockHeight()
       }
     } else if (packet.type === 'epoch' || packet.type === 'step') {
       entryId = `session-${packet.session_id}-${packet.type}-${packet.payload.id}`
@@ -159,7 +159,7 @@ router.post('/packet', async (req, res) => {
       if (packet.type === 'session') {
         if (packet.action === 'start') {
           // For session start, we anchor the dataset merkle root
-          blockHeight = getBlockHeight()
+          blockHeight = await getBlockHeight()
           txHash = await startSession(packet.session_id, packet.payload.dataset_merkle_root)
         } else if (packet.action === 'end') {
           // For session complete, we anchor the final packet hash
@@ -389,38 +389,50 @@ router.get('/sessions', async (req, res) => {
     if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
     const entries = await db.all()
-    
+    const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
+
     // Filter out meta records and get unique session IDs
     const primaryRecords = entries.filter(e => e.value.packet.session_id !== undefined && !e.value._id.startsWith('meta-'))
     
     const sessionsMap = {}
-    primaryRecords.forEach(p => {
-        const sid = p.value.packet.session_id
-        if (!sessionsMap[sid]) {
-            sessionsMap[sid] = {
-                session_id: sid,
-                start_time: p.value.timestamp,
-                end_time: p.value.timestamp,
-                steps: 0
-            }
+    await Promise.all(primaryRecords.map(async (p) => {
+      const sid = p.value.packet.session_id
+      if (!sessionsMap[sid]) {
+        sessionsMap[sid] = {
+          session_id: sid,
+          start_time: p.value.timestamp,
+          end_time: p.value.timestamp,
+          steps: 0
         }
-        if (p.value.packet.type === 'session' && p.value.packet.action === 'start') {
-            sessionsMap[sid].start_time = p.value.timestamp
+      }
+      const meta = metaRecords.find(m => m.value.packet_hash === p.value.packet_hash)
+
+      if (p.value.packet.type === 'session' && p.value.packet.action === 'start') {
+        sessionsMap[sid].start_time = p.value.timestamp
+        sessionsMap[sid].dataset_name = p.value.packet.payload.dataset_name
+        sessionsMap[sid].dataset_version = p.value.packet.payload.dataset_version
+        sessionsMap[sid].dataset_merkle_root = p.value.packet.payload.dataset_merkle_root
+        sessionsMap[sid].dataset_cid = p.value.packet.payload.dataset_cid
+        sessionsMap[sid].hyperparams = p.value.packet.payload.hyperparams
+        sessionsMap[sid].start_tx_hash = meta ? meta.value.tx_hash : 'N/A'
+        sessionsMap[sid].start_block_number = meta && meta.value.tx_hash !== 'N/A' ? await getBlockNumberByTxHash(meta.value.tx_hash) : -1
+      } else if (p.value.packet.type === 'epoch') {
+        if (p.value.packet.payload.step_id > sessionsMap[sid].steps) {
+          sessionsMap[sid].steps = p.value.packet.payload.step_id
         }
-        if (p.value.packet.type === 'epoch') {
-          if (p.value.packet.payload.step_id > sessionsMap[sid].steps) {
-            sessionsMap[sid].steps = p.value.packet.payload.step_id
-          }
-        }
-        if (p.value.packet.type === 'session' && p.value.packet.action === 'end') {
-            sessionsMap[sid].end_time = p.value.timestamp
-        }
-    })
+      } else if (p.value.packet.type === 'session' && p.value.packet.action === 'end') {
+        sessionsMap[sid].end_time = p.value.timestamp
+        sessionsMap[sid].model_cid = p.value.packet.payload.model_cid
+        sessionsMap[sid].model_hash = p.value.packet.payload.model_hash
+        sessionsMap[sid].end_tx_hash = meta ? meta.value.tx_hash : 'N/A'
+        sessionsMap[sid].end_block_number = meta && meta.value.tx_hash !== 'N/A' ? await getBlockNumberByTxHash(meta.value.tx_hash) : -1
+      }
+    }))
 
     const sessions = Object.values(sessionsMap).sort((a, b) => 
-        new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
+      new Date(b.start_time).getTime() - new Date(a.start_time).getTime()
     )
-    
+
     res.json(sessions)
   } catch (error) {
     res.status(500).json({ error: error.message })
@@ -438,26 +450,56 @@ router.get('/packets', async (req, res) => {
     
     // We need to merge primary records with their metadata (tx_hash)
     let primaryRecords = entries.filter(e => 
-        e.value.packet.type !== "session" && 
-        !e.value._id.startsWith('meta-')
+      e.value.packet.type !== "session" && 
+      !e.value._id.startsWith('meta-')
     )
     
     if (sessionId) {
-        primaryRecords = primaryRecords.filter(e => e.value.packet.session_id === sessionId)
+      primaryRecords = primaryRecords.filter(e => e.value.packet.session_id === sessionId)
     }
 
     const metaRecords = entries.filter(e => e.value._id.startsWith('meta-'))
 
-    const packets = primaryRecords.map(p => {
-        const meta = metaRecords.find(m => m.value.packet_hash === p.value.packet_hash)
-        return {
-            ...p.value,
-            cid: meta ? meta.value.cid : 'N/A',
-            tx_hash: meta ? meta.value.tx_hash : 'N/A'
-        }
-    })
+    const packets = await Promise.all(primaryRecords.map(async (p) => {
+      const meta = metaRecords.find(m => m.value.packet_hash === p.value.packet_hash)
+      return {
+        ...p.value,
+        cid: meta ? meta.value.cid : 'N/A',
+        tx_hash: meta ? meta.value.tx_hash : 'N/A',
+        block_number: meta && meta.value.tx_hash !== 'N/A' ? await getBlockNumberByTxHash(meta.value.tx_hash) : -1
+      }
+    }))
     
-    res.json(packets)
+    const steps = packets.filter(p => p.packet.type === 'step').map(p => {
+      return {
+        step_id: p.packet.payload.id,
+        session_id: p.packet.session_id,
+        epoch_id: 0, // to be filled later by frontend based on step-epoch mapping
+        metrics: p.packet.payload.metrics,
+        block_number: p.block_number,
+        tx_hash: p.tx_hash,
+        timestamp: p.timestamp,
+        cid: p.cid
+      }
+    })
+
+    const epochs = packets.filter(p => p.packet.type === 'epoch').map(p => {
+      return {
+        epoch: p.packet.payload.id,
+        session_id: p.packet.session_id,
+        step_id: p.packet.payload.step_id,
+        tx_hash: p.tx_hash,
+        block_number: p.block_number,
+        checkpoint_cid: p.packet.payload.checkpoint_cid,
+        checkpoint_hash: p.packet.payload.checkpoint_hash,
+        timestamp: p.timestamp
+      }
+    })
+
+    res.json({
+      steps: steps,
+      epochs: epochs
+    })
   } catch (error) {
     res.status(500).json({ error: error.message })
   }

@@ -103,7 +103,29 @@ export const getAnchorsFromChain = async (sessionId, blockHeight) => {
   return anchorMap
 }
 
-export const getBlockHeight = () => {
+export const getBlockHeight = async () => {
   const currentBlockHeight = await provider.getBlockNumber()
   return currentBlockHeight
+}
+
+/**
+ * Get block number by transaction hash
+ * @param {string} txHash - Transaction hash (0x...)
+ * @returns {Promise<number>} - Block number
+ */
+export const getBlockNumberByTxHash = async (txHash) => {
+  if (!provider) throw new Error('Blockchain service not initialized')
+
+  try {
+    const receipt = await provider.getTransactionReceipt(txHash);
+
+    if (!receipt) {
+      throw new Error('Transaction receipt not found. The tx might be pending.');
+    }
+
+    return receipt.blockNumber;
+  } catch (error) {
+    console.error(`获取区块高度失败 [TX: ${txHash}]:`, error.message);
+    throw error;
+  }
 }

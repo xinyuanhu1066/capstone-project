@@ -1,15 +1,11 @@
 import React from 'react';
 import { Handle, Position } from 'reactflow';
 import { ChevronDown, ChevronRight, TrendingUp, Waypoints } from 'lucide-react';
+import { type EpochContext } from '../services/api';
 
 export interface EpochNodeData {
   epoch: number;
-  sessionId: string;
-  stepId: number;
-  metrics: { test_accuracy?: number; avg_loss?: number; epoch?: number };
-  cid: string;
-  txHash: string;
-  timestamp: string;
+  fullData: EpochContext;
   isExpanded: boolean;
   isFirstInSeq: boolean;
   isLastInSeq: boolean;
@@ -19,15 +15,7 @@ export interface EpochNodeData {
 }
 
 const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data, selected }) => {
-  const accuracy = data.metrics?.test_accuracy;
-  const loss     = data.metrics?.avg_loss;
   const { isFirstInSeq, isLastInSeq } = data;
-
-  const accuracyColor =
-    accuracy == null  ? '#64748b'
-    : accuracy >= 97  ? '#10b981'
-    : accuracy >= 93  ? '#f59e0b'
-    : '#ef4444';
 
   return (
     <div
@@ -70,25 +58,10 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
         
       </div>
 
-      {/* Metrics */}
       <div style={{ borderTop: '1px solid #1e293b', paddingTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
-        {accuracy != null && (
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '3px' }}>
-              <TrendingUp size={9} /> acc
-            </span>
-            <span style={{ color: accuracyColor, fontWeight: 600 }}>{accuracy.toFixed(2)}%</span>
-          </div>
-        )}
-        {loss != null && (
-          <div style={{ display: 'flex', justifyContent: 'space-between' }}>
-            <span style={{ color: '#64748b' }}>loss</span>
-            <span style={{ color: '#e0e6ed' }}>{loss.toFixed(4)}</span>
-          </div>
-        )}
         <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: '2px' }}>
           <span style={{ color: '#64748b', display: 'flex', alignItems: 'center', gap: '3px' }}>
-            <Waypoints size={9} /> Steps
+            <Waypoints size={9} /> Nodes
           </span>
           <button
             onClick={e => { e.stopPropagation(); data.onToggleExpand(data.epoch); }}

@@ -1,22 +1,26 @@
 import React, { useState, useEffect } from 'react';
 import {
-  verifyStepIntegrity,
+  verifyLineage,
+  verifyDataset,
+  verifyModel,
+  verifyCheckpoint,
   formatOnChainReceipt,
   formatStorageReceipt,
-  type AuditPacket,
-  type EpochSummary,
-  type TrainingSession,
+  type StepContext,
+  type EpochContext,
+  type SessionContext,
   type SelectionContext,
 } from '../services/api';
 import {
-  Shield, Database, Cpu, Activity, AlertTriangle, Loader2
+  Shield, Database, Cpu, Activity, AlertTriangle, Loader2,
+  Brain
 } from 'lucide-react';
 
 interface IntegrityPanelProps {
   /** Structured selection context (session | epoch | step | null) */
   selectionContext?: SelectionContext;
   /** Legacy: kept for backward compat; ignored when selectionContext is provided */
-  selectedPacket?: AuditPacket | EpochSummary | null;
+  selectedNode?: StepContext | EpochContext | null;
 }
 
 interface VerificationResult {
@@ -59,7 +63,11 @@ const Card: React.FC<{ title: string; icon: React.ReactNode; children: React.Rea
 
 // ─── SESSION panel ────────────────────────────────────────────────────────────
 
-const SessionPanel: React.FC<{ session: TrainingSession }> = ({ session }) => {
+const SessionPanel: React.FC<{
+  session: SessionContext;
+  verifying: boolean;
+  onVerify: () => void;
+}> = ({ session, verifying, onVerify }) => {
   const datasetLabel = session.dataset_name
     ? `${session.dataset_name}${session.dataset_version ? ` v${session.dataset_version}` : ''}`
     : 'N/A';
@@ -72,7 +80,6 @@ const SessionPanel: React.FC<{ session: TrainingSession }> = ({ session }) => {
 
       <Card title="" icon={null}>
         <Row label="Session ID" value={session.session_id} />
-        <Row label="Dataset" value={datasetLabel} />
         <Row label="Total Steps" value={String(session.steps)} />
         <Row
           label="Duration"
@@ -80,13 +87,45 @@ const SessionPanel: React.FC<{ session: TrainingSession }> = ({ session }) => {
         />
         <Row label="Hyperparams" value={String(session.hyperparams)} />
       </Card>
+
+      <Card title="Dataset" icon={<Database size={15} />}>
+        <Row label="Version" value={datasetLabel} />
+        <Row label="On-Chain Receipt" value={session.start_block} />
+        <Row label="Off-Chain Receipt" value={session.dataset_cid} />
+        <button
+          className="btn-primary"
+          style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+        >
+          Verify Dataset
+        </button>
+      </Card>
+
+      <Card title="Model" icon={<Brain size={15} />}>
+        <Row label="On-Chain Receipt" value={session.end_block} />
+        <Row label="Off-Chain Receipt" value={session.model_cid} />
+        <button
+          className="btn-primary"
+          style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+        >
+          Verify Model
+        </button>
+      </Card>
+
+      <button
+        className="btn-primary"
+        style={{ width: '100%', marginTop: 'auto' }}
+        onClick={onVerify}
+        disabled={verifying}
+      >
+        {verifying ? 'VERIFYING…' : 'VERIFY LINEAGE'}
+      </button>
     </>
   );
 };
 
 // ─── EPOCH panel ─────────────────────────────────────────────────────────────
 
-const EpochPanel: React.FC<{ epoch: EpochSummary }> = ({ epoch }) => {
+const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
   const storageReceipt = formatStorageReceipt(epoch.checkpoint_cid);
   const onChainReceipt = formatOnChainReceipt(epoch.tx_hash, epoch.block_number);
 
@@ -101,18 +140,21 @@ const EpochPanel: React.FC<{ epoch: EpochSummary }> = ({ epoch }) => {
         <Row label="Ending Step" value={`#${epoch.step_id}`} />
       </Card>
 
-      <Card title="Decentralised Storage for Checkpoint" icon={<Database size={15} />}>
-        <Row
-          label="Off-Chain Receipt"
-          value={storageReceipt}
-        />
-      </Card>
-
-      <Card title="Blockchain Anchor for Checkpoint" icon={<Shield size={15} />}>
+      <Card title="Checkpoint" icon={<Database size={15} />}>
         <Row
           label="On-Chain Receipt"
           value={onChainReceipt}
         />
+        <Row
+          label="Off-Chain Receipt"
+          value={storageReceipt}
+        />
+        <button
+          className="btn-primary"
+          style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+        >
+          Verify Checkpoint
+        </button>
       </Card>
     </>
   );
@@ -121,12 +163,11 @@ const EpochPanel: React.FC<{ epoch: EpochSummary }> = ({ epoch }) => {
 // ─── STEP panel ───────────────────────────────────────────────────────────────
 
 const StepPanel: React.FC<{
-  packet: AuditPacket;
-  verifying: boolean;
+  packet: StepContext;
   verificationResult: VerificationResult | null;
-  onVerify: () => void;
-}> = ({ packet, verifying, verificationResult, onVerify }) => {
+}> = ({ packet, verificationResult }) => {
   const isVerified = verificationResult?.is_valid;
+  const verifying = null;
   const statusColor = verifying
     ? 'var(--warning)'
     : isVerified === false
@@ -169,17 +210,17 @@ const StepPanel: React.FC<{
         </div>
       </div>
 
-      <Card title="Decentralised Storage for Metrics" icon={<Database size={15} />}>
+      <Card title="On-Chain Receipt" icon={<Shield size={15} />}>
         <Row
-          label="Off-Chain Receipt"
-          value={storageReceipt}
+          label=""
+          value={onChainReceipt}
         />
       </Card>
 
-      <Card title="Blockchain Anchor for Metrics" icon={<Shield size={15} />}>
+      <Card title="Off-Chain Receipt" icon={<Database size={15} />}>
         <Row
-          label="On-Chain Receipt"
-          value={onChainReceipt}
+          label=""
+          value={storageReceipt}
         />
       </Card>
 
@@ -188,15 +229,6 @@ const StepPanel: React.FC<{
           {JSON.stringify(packet.metrics, null, 2)}
         </pre>
       </Card>
-
-      <button
-        className="btn-primary"
-        style={{ width: '100%', marginTop: 'auto' }}
-        onClick={onVerify}
-        disabled={verifying}
-      >
-        {verifying ? 'VERIFYING…' : 'RE-VERIFY LINEAGE'}
-      </button>
     </>
   );
 };
@@ -205,7 +237,7 @@ const StepPanel: React.FC<{
 
 const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
   selectionContext,
-  selectedPacket,
+  selectedNode,
 }) => {
   const [verifying, setVerifying] = useState(false);
   const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
@@ -213,10 +245,10 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
   // Resolve context — prefer new prop, fall back to legacy
   const resolved: SelectionContext = selectionContext !== null
     ? selectionContext
-    : selectedPacket
-      ? 'epoch' in selectedPacket
-        ? { type: 'epoch', data: selectedPacket as EpochSummary }
-        : { type: 'step',  data: selectedPacket as AuditPacket }
+    : selectedNode
+      ? 'epoch' in selectedNode
+        ? { type: 'epoch', data: selectedNode as EpochContext }
+        : { type: 'step',  data: selectedNode as StepContext }
       : null;
 
   useEffect(() => {

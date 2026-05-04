@@ -6,7 +6,7 @@ import ReactFlow, {
   type Node, type Edge, type NodeProps
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { type AuditPacket, type EpochSummary } from '../services/api';
+import { type StepContext, type EpochContext } from '../services/api';
 import EpochNode from './EpochNode';
 import { Shield } from 'lucide-react';
 
@@ -33,9 +33,7 @@ const ARROW_DASH  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color
 // ─── Step node ────────────────────────────────────────────────────────────────
 interface StepNodeData {
   stepId: number;
-  hash?: string;
-  loss?: number;
-  fullData: AuditPacket;
+  fullData: StepContext;
   // Add these layout flags:
   isFirstInSeq: boolean;
   isLastInSeq: boolean;
@@ -213,10 +211,10 @@ const fmt = (iso: string) =>
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface LineageMapProps {
-  packets:        AuditPacket[];
-  epochSummaries: EpochSummary[];
-  selectedPacket: AuditPacket | EpochSummary | null;
-  onNodeClick:    (data: AuditPacket | EpochSummary | null) => void;
+  steps:        StepContext[];
+  epochs: EpochContext[];
+  selectedNode: StepContext | EpochContext | null;
+  onNodeClick:    (data: StepContext | EpochContext | null) => void;
 }
 
 const nodeTypes = {
@@ -226,7 +224,7 @@ const nodeTypes = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const LineageMap: React.FC<LineageMapProps> = ({
-  packets, epochSummaries, selectedPacket, onNodeClick,
+  steps, epochs, selectedNode, onNodeClick,
 }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -242,14 +240,11 @@ const LineageMap: React.FC<LineageMapProps> = ({
   }, []);
 
   useEffect(() => {
-    const stepPackets  = packets.filter(p => !('epoch' in p));
-    const sortedEpochs = [...epochSummaries].sort((a, b) => a.epoch - b.epoch);
-
-    // Group step packets by epoch
-    const stepsByEpoch: Record<number, AuditPacket[]> = {};
-    sortedEpochs.forEach((ep, i) => {
-      const lo = i === 0 ? 0 : sortedEpochs[i - 1].step_id + 1;
-      stepsByEpoch[ep.epoch] = stepPackets.filter(p => p.step_id >= lo && p.step_id <= ep.step_id);
+    // Group step steps by epoch
+    const stepsByEpoch: Record<number, StepContext[]> = {};
+    epochs.forEach((ep, i) => {
+      const lo = i === 0 ? 0 : epochs[i - 1].step_id + 1;
+      stepsByEpoch[ep.epoch] = steps.filter(p => p.step_id >= lo && p.step_id <= ep.step_id);
       stepsByEpoch[ep.epoch].forEach((p) => p.epoch_id = ep.epoch);
     });
 
@@ -259,22 +254,21 @@ const LineageMap: React.FC<LineageMapProps> = ({
     // ══════════════════════════════════════════════════
     // PLAIN MODE — no epoch data, simple step chain
     // ══════════════════════════════════════════════════
-    if (!epochSummaries.length) {
-      const sorted = [...stepPackets].sort((a, b) => a.step_id - b.step_id);
+    if (!epochs.length) {
       const ROW_W  = NODES_PER_ROW * STEP_W + (NODES_PER_ROW - 1) * STEP_GAP_X;
 
-      sorted.forEach((p, j) => {
-        const sp = staggeredPos(j, sorted.length, ROW_W + GROUP_PAD_X * 2);
+      steps.forEach((p, j) => {
+        const sp = staggeredPos(j, steps.length, ROW_W + GROUP_PAD_X * 2);
         rfNodes.push({
           id: `step-${p.step_id}`, type: 'step',
           position: { x: sp.x, y: sp.y },
-          selected: selectedPacket !== null && !('epoch' in selectedPacket)
-            && (selectedPacket as AuditPacket).packet_hash === p.packet_hash,
-          data: { stepId: p.step_id, hash: p.packet_hash, loss: p.runtime_data?.metrics?.loss, fullData: p },
+          selected: selectedNode !== null && !('epoch' in selectedNode)
+            && (selectedNode as StepContext).step_id === p.step_id,
+          data: { stepId: p.step_id, fullData: p },
         });
         if (j === 0) return;
-        const prev   = sorted[j - 1];
-        const prevSp = staggeredPos(j - 1, sorted.length, ROW_W + GROUP_PAD_X * 2);
+        const prev   = steps[j - 1];
+        const prevSp = staggeredPos(j - 1, steps.length, ROW_W + GROUP_PAD_X * 2);
         buildStepEdge(rfEdges, prev, p, prevSp, sp);
       });
 
@@ -306,7 +300,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
     let cursorY = TIMELINE_TOP + 20;
     const epochCentreY: Record<number, number> = {};
 
-    sortedEpochs.forEach(ep => {
+    epochs.forEach(ep => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
       const groupSize = isExpanded ? computeGroupSize(children.length) : { height: 0 };
@@ -320,13 +314,13 @@ const LineageMap: React.FC<LineageMapProps> = ({
     const totalH = cursorY + 20;
 
     // Pass 2: build nodes & edges
-    sortedEpochs.forEach((ep, i) => {
+    epochs.forEach((ep, i) => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
       const cy         = epochCentreY[ep.epoch];
-      const isEpochSel = selectedPacket !== null && (
-        ('epoch' in selectedPacket && selectedPacket.epoch === ep.epoch) ||
-        ('epoch_id' in selectedPacket && selectedPacket.epoch_id === ep.epoch)
+      const isEpochSel = selectedNode !== null && (
+        ('epoch' in selectedNode && selectedNode.epoch === ep.epoch) ||
+        ('epoch_id' in selectedNode && selectedNode.epoch_id === ep.epoch)
       );
 
       // Epoch node — always present in left column, vertically centred at cy
@@ -335,20 +329,20 @@ const LineageMap: React.FC<LineageMapProps> = ({
         position: { x: EPOCH_COL_CX - EPOCH_W / 2, y: cy - EPOCH_H / 2 },
         selected: isEpochSel,
         data: {
-          epoch: ep.epoch, sessionId: ep.session_id, stepId: ep.step_id,
-          cid: ep.checkpoint_cid, txHash: ep.tx_hash,
-          timestamp: ep.timestamp, isExpanded, childCount: children.length,
+          epoch: ep.epoch,
+          fullData: ep,
+          isExpanded, childCount: children.length,
           onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
           isFirstInSeq: i === 0,
-          isLastInSeq: i === sortedEpochs.length - 1,
+          isLastInSeq: i === epochs.length - 1,
         },
       });
 
       // Epoch → Epoch edge (bottom → top, vertical)
       if (i > 0) {
         rfEdges.push({
-          id: `ee-${sortedEpochs[i-1].epoch}-${ep.epoch}`,
-          source: `epoch-${sortedEpochs[i-1].epoch}`, sourceHandle: 'bottom',
+          id: `ee-${epochs[i-1].epoch}-${ep.epoch}`,
+          source: `epoch-${epochs[i-1].epoch}`, sourceHandle: 'bottom',
           target: `epoch-${ep.epoch}`,               targetHandle: 'top',
           animated: true, markerEnd: ARROW_CYAN,
           style: { stroke: '#00f2ff', strokeWidth: 2 },
@@ -386,16 +380,15 @@ const LineageMap: React.FC<LineageMapProps> = ({
       // Step nodes with staggered positions + smart edges
       sortedChildren.forEach((p, j) => {
         const sp        = staggeredPos(j, sortedChildren.length, gW);
-        const isStepSel = selectedPacket !== null && !('epoch' in selectedPacket)
-          && (selectedPacket as AuditPacket).packet_hash === p.packet_hash;
+        const isStepSel = selectedNode !== null && !('epoch' in selectedNode)
+          && (selectedNode as StepContext).step_id === p.step_id;
 
         rfNodes.push({
           id: `step-${p.step_id}`, type: 'step',
           position: { x: groupX + sp.x, y: groupY + sp.y },
           selected: isStepSel,
           data: { 
-            stepId: p.step_id,
-            fullData: p,
+            stepId: p.step_id, fullData: p,
             // Pass the layout properties from staggeredPos
             isFirstInSeq: sp.isFirstInSeq,
             isLastInSeq: sp.isLastInSeq,
@@ -415,12 +408,12 @@ const LineageMap: React.FC<LineageMapProps> = ({
 
     // Timeline node
     // tick.y is RELATIVE to the timeline node's canvas top (TIMELINE_TOP)
-    const ticks = sortedEpochs.map(ep => ({
+    const ticks = epochs.map(ep => ({
       y: epochCentreY[ep.epoch] - TIMELINE_TOP,
       label: fmt(ep.timestamp),
-      isActive: selectedPacket !== null && (
-        ('epoch' in selectedPacket && selectedPacket.epoch === ep.epoch) ||
-        ('epoch_id' in selectedPacket && selectedPacket.epoch_id === ep.epoch)
+      isActive: selectedNode !== null && (
+        ('epoch' in selectedNode && selectedNode.epoch === ep.epoch) ||
+        ('epoch_id' in selectedNode && selectedNode.epoch_id === ep.epoch)
       ),
     }));
 
@@ -436,7 +429,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
     const currentKey = JSON.stringify({
       ids:      rfNodes.map(n => n.id),
       expanded: Array.from(expandedEpochs),
-      session:  stepPackets.length > 0 ? stepPackets[0].session_id : 'none',
+      session:  steps.length > 0 ? steps[0].session_id : 'none',
     });
     if (currentKey !== lastKeyRef.current) {
       lastKeyRef.current = currentKey;
@@ -449,14 +442,14 @@ const LineageMap: React.FC<LineageMapProps> = ({
     }
     setEdges([...rfEdges]);
 
-  }, [packets, epochSummaries, expandedEpochs, selectedPacket, setNodes, setEdges, onNodeClick, toggleEpoch]);
+  }, [steps, epochs, expandedEpochs, selectedNode, setNodes, setEdges, onNodeClick, toggleEpoch]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
       <ReactFlow
         nodes={nodes} edges={edges} nodeTypes={nodeTypes}
         onNodesChange={onNodesChange} onEdgesChange={onEdgesChange}
-        onNodeClick={(_, node) => { if (node.type === 'step') onNodeClick(node.data.fullData); }}
+        onNodeClick={(_, node) => { if (node.type === 'step') onNodeClick(node.data); }}
         onPaneClick={() => onNodeClick(null)}
         fitView fitViewOptions={{ padding: 0.2 }} minZoom={0.1}
       >
@@ -470,8 +463,8 @@ const LineageMap: React.FC<LineageMapProps> = ({
 // ─── Edge builder (shared between plain + epoch mode) ─────────────────────────
 function buildStepEdge(
   rfEdges: Edge[],
-  prev: AuditPacket,
-  cur:  AuditPacket,
+  prev: StepContext,
+  cur:  StepContext,
   prevSp: ReturnType<typeof staggeredPos>,
   curSp:  ReturnType<typeof staggeredPos>,
 ) {
@@ -518,6 +511,6 @@ function buildStepEdge(
 }
 
 // Re-export type needed by App.tsx
-export type { EpochSummary } from '../services/api';
+export type { EpochContext } from '../services/api';
 
 export default LineageMap;

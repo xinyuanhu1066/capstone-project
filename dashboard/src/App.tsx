@@ -1,24 +1,23 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import './styles/theme.css';
-import { fetchPackets, fetchSessions, fetchEpochs, type AuditPacket, type TrainingSession, type EpochSummary, type SelectionContext } from './services/api';
+import { fetchPackets, fetchSessions, type SessionContext, type StepContext, type EpochContext, type SelectionContext } from './services/api';
 import LineageMap from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
 import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
 
 function App() {
-  const [sessions, setSessions] = useState<TrainingSession[]>([]);
+  const [sessions, setSessions] = useState<SessionContext[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
-  const [packets, setPackets] = useState<AuditPacket[]>([]);
-  const [selectedPacket, setSelectedPacket] = useState<AuditPacket | EpochSummary | null>(null);
+  const [steps, setSteps] = useState<StepContext[]>([]);
+  const [selectedNode, setSelectedNode] = useState<StepContext | EpochContext | null>(null);
   const [loading, setLoading] = useState(true);
-  const [epochSummaries, setEpochSummaries] = useState<EpochSummary[]>([]);
+  const [epochs, setEpochs] = useState<EpochContext[]>([]);
   const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);
-  const [selectedSession, setSelectedSession] = useState<TrainingSession | null>(null); 
+  const [selectedSession, setSelectedSession] = useState<SessionContext | null>(null); 
   
   // Use a ref to store the current session ID to avoid dependency cycle in loadData
   const selectedSessionIdRef = useRef<string | null>(null);
   const packetsRef = useRef<string>('');
-  const epochsRef = useRef<string>('');
 
   const loadData = useCallback(async () => {
     try {
@@ -36,28 +35,18 @@ function App() {
 
       const sessionId = selectedSessionIdRef.current;
       if (sessionId) {
-        // Fetch packets and epochs separately to be more resilient
         try {
           const packetsData = await fetchPackets(sessionId);
           const packetsJson = JSON.stringify(packetsData);
           if (packetsJson !== packetsRef.current) {
             packetsRef.current = packetsJson;
-            const sorted = [...packetsData].sort((a, b) => a.step_id - b.step_id);
-            setPackets(sorted);
+            const sortedSteps = [...packetsData.steps].sort((a, b) => a.step_id - b.step_id);
+            const sortedEpochs = [...packetsData.epochs].sort((a, b) => a.epoch - b.epoch);
+            setSteps(sortedSteps);
+            setEpochs(sortedEpochs);
           }
         } catch (err) {
-          console.error('[Dashboard Error] Failed to load packets:', err);
-        }
-
-        try {
-          const epochsData = await fetchEpochs(sessionId);
-          const epochsJson = JSON.stringify(epochsData);
-          if (epochsJson !== epochsRef.current) {
-            epochsRef.current = epochsJson;
-            setEpochSummaries(epochsData);
-          }
-        } catch (err) {
-          console.error('[Dashboard Error] Failed to load epochs:', err);
+          console.error('[Dashboard Error] Failed to load steps and epochs:', err);
         }
       }
     } catch (error) {
@@ -80,8 +69,8 @@ function App() {
     };
   }, [loadData]);
 
-  const handleSessionSelect = (session: TrainingSession) => {
-    setSelectedPacket(null);
+  const handleSessionSelect = (session: SessionContext) => {
+    setSelectedNode(null);
   
     if (session.session_id === selectedSessionId) {
       setSelectionContext({ type: 'session', data: selectedSession! });
@@ -90,7 +79,6 @@ function App() {
     
     // Reset refs so the next load definitely triggers a state update
     packetsRef.current = '';
-    epochsRef.current = '';
     
     selectedSessionIdRef.current = session.session_id;
     setSelectedSessionId(session.session_id);
@@ -101,12 +89,12 @@ function App() {
     loadData();
   };
 
-  const handleNodeClick = (packet: AuditPacket | EpochSummary | null) => {
+  const handleNodeClick = (packet: StepContext | EpochContext | null) => {
     if (packet === null) {
-      setSelectedPacket(null);
+      setSelectedNode(null);
       setSelectionContext({ type: 'session', data: selectedSession! });
     } else {
-      setSelectedPacket(packet);
+      setSelectedNode(packet);
       setSelectionContext(null);
     }
   };
@@ -181,7 +169,7 @@ function App() {
           <div style={{ display: 'flex', height: '100%', alignItems: 'center', justifyContent: 'center' }}>
             <p className="font-mono" style={{ color: 'var(--accent-cyan)' }}>INITIALIZING PROVENANCE ENGINE...</p>
           </div>
-        ) : (packets.length === 0 && epochSummaries.length === 0) ? (
+        ) : (steps.length === 0 && epochs.length === 0) ? (
           <div style={{ display: 'flex', flexDirection: 'column', height: '100%', alignItems: 'center', justifyContent: 'center', gap: '1rem', color: 'var(--text-secondary)' }}>
             <DatabaseZap size={48} opacity={0.3} />
             <p className="font-mono">NO AUDIT DATA DETECTED</p>
@@ -191,15 +179,15 @@ function App() {
           </div>
         ) : (
           <LineageMap 
-            packets={packets} 
-            epochSummaries={epochSummaries}
-            selectedPacket={selectedPacket}
+            steps={steps} 
+            epochs={epochs}
+            selectedNode={selectedNode}
             onNodeClick={handleNodeClick} 
           />
         )}
       </div>
 
-      <IntegrityPanel selectionContext={selectionContext} selectedPacket={selectedPacket} />
+      <IntegrityPanel selectionContext={selectionContext} selectedNode={selectedNode} />
     </div>
   );
 }
