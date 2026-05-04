@@ -3,6 +3,8 @@ import stringify from 'json-stable-stringify'; // make sure the order of keys is
 import { execSync } from 'child_process';
 import path from 'path';
 import { pipeline } from 'stream/promises';
+import { mfs } from '@helia/mfs'
+import { Readable } from 'stream'
 
 /**
  * Calulate SHA256 hash of Packet, align with Python HashingEngine
@@ -78,30 +80,34 @@ export const calculateDatasetMerkleRoot = (rootDir) => {
 
 /**
  * Calculate Hash from IPFS File Stream
- * @param {Object} heliaFs - unixfs(helia) instance
+ * @param {Object} helia - helia instance
  * @param {string} cidStr - the CID of the file
  * @returns {Promise<string>} - the calculated hexadecimal hash
  */
-export const calculateHashFromStream = async (heliaFs, cidStr) => {
-    const hash = crypto.createHash('sha256');
+export const calculateHashFromStream = async (helia, cidStr) => {
+    const mutableFs = mfs(helia)
+    const tmpPath = `/hash-${Date.now()}-${Math.random().toString(36).slice(2)}`
+
+    await mutableFs.cp(`/ipfs/${cidStr}`, tmpPath)
 
     try {
+        const hash = crypto.createHash('sha256')
+
         await pipeline(
-            heliaFs.cat(cidStr),
+            Readable.from(mutableFs.cat(tmpPath)),
             async function* (source) {
                 for await (const chunk of source) {
-                    // 1. Incrementally update the hash [cite: 2]
-                    hash.update(chunk);
-                    // 2. Pass the data down (if there's a writeStream to connect to)
-                    yield chunk;
+                    hash.update(chunk)
+                    yield chunk
                 }
             }
-        );
+        )
 
-        // return hex string, ensuring alignment with engine.py's hexdigest() format [cite: 2]
-        return hash.digest('hex');
+        return hash.digest('hex')
     } catch (error) {
-        console.error("Stream-based hash calculation failed:", error);
-        throw error;
+        console.error('Stream-based hash calculation failed:', error)
+        throw error
+    } finally {
+        await mutableFs.rm(tmpPath).catch(() => {})
     }
 }

@@ -1,9 +1,16 @@
 import { ethers } from 'ethers'
+import * as dotenv from "dotenv";
+import path from "path";
+import { fileURLToPath } from 'url';
+
+const __filename = fileURLToPath(import.meta.url)
+const __dirname = path.dirname(__filename)
+dotenv.config({ path: path.resolve(__dirname, '../../.env') })
 
 // Configuration (can be overridden by env vars)
-const GANACHE_URL = process.env.GANACHE_URL || 'http://127.0.0.1:7545'
-const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS || '0x700684D33AaE754A584A410da7657CEA5051806e'
-const PRIVATE_KEY = process.env.PRIVATE_KEY || '0x01440d9f3a6aa5dc3c9aac4fa8a1910465dc4971c48025b244e4f163748a3b75'
+const GANACHE_URL = process.env.GANACHE_URL
+const CONTRACT_ADDRESS = process.env.CONTRACT_ADDRESS
+const PRIVATE_KEY = process.env.PRIVATE_KEY
 
 const ABI = [
   "function startSession(bytes32 _sessionId, bytes32 _merkleRoot) external",
@@ -75,7 +82,7 @@ export const completeSession = async (sessionId, finalPacketHashHex) => {
 export const getSession = async (sessionId) => {
   if (!contract) throw new Error('Blockchain service not initialized')
   const sid = sessionIdToBytes32(sessionId)
-  const s = await contract.sessions(sid)
+  const s = await contract.getSession(sid)
   // s may be an array-like result
   return {
     datasetMerkleRoot: s.datasetMerkleRoot ?? s[0],

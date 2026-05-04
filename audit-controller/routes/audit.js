@@ -1,6 +1,7 @@
 import express from 'express'
 import { getDB, getHelia } from '../services/orbitdb.js'
 import { startSession, syncProgress, completeSession, getSession } from '../services/blockchain.js'
+import { mfs } from '@helia/mfs'
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import { auditAllPackets } from '../tools/validity.js'
@@ -10,6 +11,7 @@ import { downloadDirectory } from '../tools/fs.js'
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import fsPromises from 'fs/promises';
 
 const router = express.Router()
 
@@ -19,8 +21,8 @@ router.post('/blob', express.raw({ type: 'application/octet-stream', limit: '100
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
 
-    const fs = unixfs(helia)
-    const cid = await fs.addBytes(req.body)
+    const heliaFs = unixfs(helia)
+    const cid = await heliaFs.addBytes(req.body)
     
     console.log(`[Audit Controller] Blob stored | CID: ${cid.toString()}`)
     res.status(201).json({ status: 'success', cid: cid.toString() })
@@ -91,21 +93,29 @@ router.post('/dataset/directory', async (req, res) => {
     const { files } = req.body
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    const fs = unixfs(helia)
+    
+    const mutableFs = mfs(helia)
+    const workDir = `/dataset-${Date.now()}`
+    await mutableFs.mkdir(workDir, { force: true })
 
-    let rootCid = await fs.addDirectory()
     console.log(`[Audit Controller] Building directory structure for ${files.length} files...`)
 
     for (const file of files) {
       try {
-        const fileCid = CID.parse(file.cid)
-        rootCid = await fs.cp(fileCid, rootCid, file.path)
+        const destPath = `${workDir}/${file.path}`
+        const parentDir = destPath.substring(0, destPath.lastIndexOf('/'))
+        await mutableFs.mkdir(parentDir, { force: true })
+        await mutableFs.cp(CID.parse(file.cid), destPath, { force: true })
       } catch (err) {
         console.warn(`[Audit Controller] Failed to link file ${file.path}:`, err.message)
       }
     }
 
-    const finalCid = rootCid.toString()
+    const { cid } = await mutableFs.stat(workDir)
+    const finalCid = cid.toString()
+    // clear MFS working directory (data in blockstore is unaffected)
+    await mutableFs.rm(workDir, { recursive: true })
+
     console.log(`[Audit Controller] Dataset directory finalized | Root CID: ${finalCid}`)
 
     res.status(201).json({ status: 'success', root_cid: finalCid, file_count: files.length })
@@ -131,12 +141,12 @@ router.post('/packet', async (req, res) => {
     let entryId = ""
     let blockHeight = null
     if (packet.type === 'session') {
-      entryId = `session-${packet.session_id}-${packet.action}`
+      entryId = `${packet.session_id}-${packet.action}`
       if (packet.action === 'start') {
         blockHeight = await getBlockHeight()
       }
     } else if (packet.type === 'epoch' || packet.type === 'step') {
-      entryId = `session-${packet.session_id}-${packet.type}-${packet.payload.id}`
+      entryId = `${packet.session_id}-${packet.type}-${packet.payload.id}`
     } else {
       return res.status(400).json({ error: 'Invalid packet type' })
     }
@@ -241,6 +251,8 @@ router.get('/verify/session/:id', async (req, res) => {
 
 // GET /audit/verify/session/:sessionId/dataset - Verify dataset integrity by comparing local merkle root with blockchain anchor
 router.get('/verify/session/:sessionId/dataset', async (req, res) => {
+  const tempDir = path.join(os.tmpdir(), `audit-dataset-${Date.now()}`);
+
   try {
     const { sessionId } = req.params
     const db = getDB()
@@ -268,11 +280,8 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
     const datasetCid = sessionStartPacket.value.packet.payload.dataset_cid
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    const heliaFs = unixfs(helia)
 
-    const tempDir = path.join(os.tmpdir(), `audit-${Date.now()}`);
-    fs.mkdirSync(tempDir);
-    await downloadDirectory(heliaFs, datasetCid, tempDir)
+    await downloadDirectory(helia, datasetCid, tempDir)
 
     const calculatedMerkleRoot = calculateDatasetMerkleRoot(tempDir)
     const isValid = verifyHashMatch(calculatedMerkleRoot, anchorMerkleRoot)
@@ -291,6 +300,8 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
   } catch (error) {
     console.error('[Audit Controller Error] Verification failed:', error)
     res.status(500).json({ error: error.message })
+  } finally {
+    await fsPromises.rm(tempDir, { recursive: true, force: true }).catch(() => {})
   }
 })
 
@@ -318,8 +329,8 @@ router.get('/verify/session/:sessionId/model', async (req, res) => {
     const modelCid = sessionEndPacket.value.packet.payload.model_cid
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    const heliaFs = unixfs(helia)
-    const calculatedModelHash = await calculateHashFromStream(heliaFs, modelCid)
+
+    const calculatedModelHash = await calculateHashFromStream(helia, modelCid)
     
     const isValid = verifyHashMatch(calculatedModelHash, targetModelHash)
     console.log(`[Audit Controller] Model Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
@@ -362,8 +373,7 @@ router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, r
     const checkpointCid = epochPacket.value.packet.payload.checkpoint_cid
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    const heliaFs = unixfs(helia)
-    const calculatedCheckpointHash = await calculateHashFromStream(heliaFs, checkpointCid)
+    const calculatedCheckpointHash = await calculateHashFromStream(helia, checkpointCid)
     
     const isValid = verifyHashMatch(calculatedCheckpointHash, targetCheckpointHash)
     console.log(`[Audit Controller] Epoch Checkpoint Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
