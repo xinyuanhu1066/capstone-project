@@ -334,6 +334,7 @@ router.get('/verify/session/:sessionId/model', async (req, res) => {
     // find session end packet to get the final model hash
     const entries = await db.all()
     const sessionEndPacket = entries.find(e => 
+      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
       e.value.packet.session_id === sessionId && 
       e.value.packet.type === 'session' && 
       e.value.packet.action === 'end'
@@ -378,6 +379,7 @@ router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, r
     // find the specific epoch packet
     const entries = await db.all()
     const epochPacket = entries.find(e => 
+      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
       e.value.packet.session_id === sessionId && 
       e.value.packet.type === 'epoch' && 
       e.value.packet.payload.id === parseInt(epochId)

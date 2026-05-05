@@ -5,6 +5,7 @@ import path from 'path';
 import { pipeline } from 'stream/promises';
 import { unixfs } from '@helia/unixfs'
 import { Readable } from 'stream'
+import { CID } from 'multiformats/cid'
 
 /**
  * Calulate SHA256 hash of Packet, align with Python HashingEngine

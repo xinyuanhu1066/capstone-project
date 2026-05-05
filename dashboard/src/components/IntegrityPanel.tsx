@@ -57,6 +57,15 @@ interface LineageVerifyResult {
   stepsValidation: Map<number, string>;
 }
 
+interface CheckpointVerifyResult {
+  is_valid: boolean;
+  details: {
+    target_checkpoint_hash: string;
+    calculated_checkpoint_hash: string;
+    checkpoint_cid: string;
+  };
+}
+
 // ─── Shared primitives ────────────────────────────────────────────────────────
 
 const Row: React.FC<{ label: string; value: React.ReactNode; accent?: string }> = ({
@@ -210,29 +219,29 @@ const SessionPanel: React.FC<{
       <Card
         title={
           <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
-          <span>Dataset</span>
-          {datasetVerifyResult && (
-            <div style={{
-              marginLeft: 'auto',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              color: datasetVerifyResult.is_valid ? 'var(--success)' : 'var(--danger)'
-            }}>
-              {datasetVerifyResult.is_valid ? (
-                  <>
-                    <Shield size={14} />
-                    <span style={{ fontSize: '0.7rem' }}>Verified</span>
-                  </>
-                ) : (
-                  <>
-                    <AlertTriangle size={14} />
-                    <span style={{ fontSize: '0.7rem' }}>Invalid</span>
-                  </>
-                ) }
-            </div>
-          )}
-        </div>
+            <span>Dataset</span>
+            {datasetVerifyResult && (
+              <div style={{
+                marginLeft: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                color: datasetVerifyResult.is_valid ? 'var(--success)' : 'var(--danger)'
+              }}>
+                {datasetVerifyResult.is_valid ? (
+                    <>
+                      <Shield size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Verified</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Invalid</span>
+                    </>
+                  ) }
+              </div>
+            )}
+          </div>
         }
         icon={<Database size={15} />}
       >
@@ -281,7 +290,35 @@ const SessionPanel: React.FC<{
         </button>
       </Card>
 
-      <Card title="Model" icon={<Brain size={15} />}>
+      <Card
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+            <span>Model</span>
+            {modelVerifyResult && (
+              <div style={{
+                marginLeft: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                color: modelVerifyResult.is_valid ? 'var(--success)' : 'var(--danger)'
+              }}>
+                {modelVerifyResult.is_valid ? (
+                    <>
+                      <Shield size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Verified</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Invalid</span>
+                    </>
+                  ) }
+              </div>
+            )}
+          </div>
+        }
+        icon={<Brain size={15} />}
+      >
         <Row
           label="On-Chain Receipt"
           value={
@@ -344,6 +381,20 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
   const storageReceipt = formatStorageReceipt(epoch.checkpoint_cid);
   const onChainReceipt = formatOnChainReceipt(epoch.tx_hash, epoch.block_number);
 
+  const [verifyingCheckpoint, setVerifyingCheckpoint] = useState<boolean>(false);
+  const [checkpointVerifyResult, setCheckpointVerifyResult] = useState<CheckpointVerifyResult | null>(null);
+
+  const handleVerifyCheckpoint = async () => {
+    try {
+      setVerifyingCheckpoint(true);
+      setCheckpointVerifyResult(null);
+      const result = await verifyCheckpoint(epoch.session_id, epoch.epoch);
+      setCheckpointVerifyResult(result);
+    } finally {
+      setVerifyingCheckpoint(false);
+    }
+  };
+
   return (
     <>
       <h2 style={{ color: 'var(--accent-cyan)', fontSize: '1.1rem', marginBottom: '0.75rem' }}>
@@ -355,7 +406,35 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
         <Row label="Ending Step" value={`#${epoch.step_id}`} />
       </Card>
 
-      <Card title="Checkpoint" icon={<Database size={15} />}>
+      <Card
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+            <span>Checkpoint</span>
+            {checkpointVerifyResult && (
+              <div style={{
+                marginLeft: 'auto',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                color: checkpointVerifyResult.is_valid ? 'var(--success)' : 'var(--danger)'
+              }}>
+                {checkpointVerifyResult.is_valid ? (
+                    <>
+                      <Shield size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Verified</span>
+                    </>
+                  ) : (
+                    <>
+                      <AlertTriangle size={14} />
+                      <span style={{ fontSize: '0.7rem' }}>Invalid</span>
+                    </>
+                  ) }
+              </div>
+            )}
+          </div>
+        }
+        icon={<Database size={15} />}
+      >
         <Row
           label="On-Chain Receipt"
           value={
@@ -393,8 +472,10 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+          onClick={handleVerifyCheckpoint}
+          disabled={verifyingCheckpoint}
         >
-          Verify Checkpoint
+          {verifyingCheckpoint ? 'Verifying…' : 'Verify Checkpoint'}
         </button>
       </Card>
     </>
