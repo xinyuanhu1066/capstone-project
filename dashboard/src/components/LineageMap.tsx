@@ -213,8 +213,8 @@ const fmt = (iso: string) =>
 export interface LineageMapProps {
   steps:        StepContext[];
   epochs: EpochContext[];
-  selectedNode: StepContext | EpochContext | null;
-  onNodeClick:    (data: StepContext | EpochContext | null) => void;
+  selectedNode: StepNodeData | EpochContext | null;
+  onNodeClick:    (data: StepNodeData | EpochContext | null) => void;
 }
 
 const nodeTypes = {
@@ -263,7 +263,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
           id: `step-${p.step_id}`, type: 'step',
           position: { x: sp.x, y: sp.y },
           selected: selectedNode !== null && !('epoch' in selectedNode)
-            && (selectedNode as StepContext).step_id === p.step_id,
+            && (selectedNode as StepNodeData).stepId === p.step_id,
           data: { stepId: p.step_id, fullData: p },
         });
         if (j === 0) return;
@@ -319,8 +319,8 @@ const LineageMap: React.FC<LineageMapProps> = ({
       const children   = stepsByEpoch[ep.epoch] ?? [];
       const cy         = epochCentreY[ep.epoch];
       const isEpochSel = selectedNode !== null && (
-        ('epoch' in selectedNode && selectedNode.epoch === ep.epoch) ||
-        ('epoch_id' in selectedNode && selectedNode.epoch_id === ep.epoch)
+        ('epoch' in selectedNode && (selectedNode as EpochContext).epoch === ep.epoch) ||
+        ('fullData' in selectedNode && (selectedNode as StepNodeData).fullData.epoch_id && (selectedNode as StepNodeData).fullData.epoch_id === ep.epoch)
       );
 
       // Epoch node — always present in left column, vertically centred at cy
@@ -381,7 +381,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
       sortedChildren.forEach((p, j) => {
         const sp        = staggeredPos(j, sortedChildren.length, gW);
         const isStepSel = selectedNode !== null && !('epoch' in selectedNode)
-          && (selectedNode as StepContext).step_id === p.step_id;
+          && (selectedNode as StepNodeData).stepId === p.step_id;
 
         rfNodes.push({
           id: `step-${p.step_id}`, type: 'step',
@@ -413,7 +413,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
       label: fmt(ep.timestamp),
       isActive: selectedNode !== null && (
         ('epoch' in selectedNode && selectedNode.epoch === ep.epoch) ||
-        ('epoch_id' in selectedNode && selectedNode.epoch_id === ep.epoch)
+        ('fullData' in selectedNode && (selectedNode as StepNodeData).fullData.epoch_id && (selectedNode as StepNodeData).fullData.epoch_id === ep.epoch)
       ),
     }));
 
