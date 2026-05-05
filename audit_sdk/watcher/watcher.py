@@ -30,7 +30,10 @@ class TrainingWatcher:
             cls._instance = super(TrainingWatcher, cls).__new__(cls)
         return cls._instance
 
-    def __init__(self, dataset_dir: Optional[str] = None, step_interval: int = 100, dataset_name: str = "Unknown"):
+    def __init__(
+            self, dataset_dir: Optional[str] = None,
+            step_interval: int = 100, dataset_name: str = "Unknown",
+            exclude: list = None):
         if hasattr(self, '_initialized') and self._initialized:
             return
         
@@ -45,6 +48,7 @@ class TrainingWatcher:
         self.current_loss = 0.0
         self.current_epoch = 0
         self.hyperparams = {}
+        self.exclude = set(exclude or ["dummy.txt"])
         
         # Risk Mitigation: Step-level metrics tracking for anomaly detection
         self.step_metrics: List[float] = []
@@ -100,6 +104,8 @@ class TrainingWatcher:
         files_to_upload = []
         for root, _, files in os.walk(self.dataset_dir):
             for file in files:
+                if file in self.exclude:
+                    continue
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, self.dataset_dir)
                 with open(full_path, 'rb') as f:
@@ -129,6 +135,8 @@ class TrainingWatcher:
         file_paths = []
         for root, _, files in os.walk(self.dataset_dir):
             for file in files:
+                if file in self.exclude:
+                    continue
                 file_paths.append(os.path.join(root, file))
         return self.hashing_engine.calculate_merkle_root(file_paths)
 
