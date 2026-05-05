@@ -412,10 +412,10 @@ class TrainingWatcher:
                 "model_hash": model_hash
             })
 
-        # Flush buffers
-        timeout = time.time() + 10
-        while not self.buffer.empty() and time.time() < timeout:
-            time.sleep(0.1)
+        try:
+            self.buffer.join()
+        except Exception:
+            pass
         
         self.is_running = False
         for thread_name in ['processor_thread', 'blob_processor_thread']:

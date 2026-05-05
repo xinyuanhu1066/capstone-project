@@ -25,6 +25,31 @@ const ABI = [
 let provider = null
 let wallet = null
 let contract = null
+let txQueue = Promise.resolve()
+let currentNonce = null
+
+const sendWithLock = (fn) => {
+  const result = txQueue.then(() => fn())
+  txQueue = result.catch(() => {})
+  return result
+}
+
+const sendTx = async (fn) => {
+  return sendWithLock(async () => {
+    if (currentNonce === null) {
+      currentNonce = await provider.getTransactionCount(wallet.address, 'latest')
+    }
+    const nonce = currentNonce
+    try {
+      const result = await fn(nonce)
+      currentNonce++
+      return result
+    } catch (err) {
+      currentNonce = null
+      throw err
+    }
+  })
+}
 
 const toBytes32Hex = (h) => {
   if (!h) return '0x' + '0'.repeat(64)
@@ -56,27 +81,33 @@ export const startSession = async (sessionId, merkleRootHex) => {
   if (!contract) throw new Error('Blockchain service not initialized')
   const sid = sessionIdToBytes32(sessionId)
   const mr = toBytes32Hex(merkleRootHex)
-  const tx = await contract.startSession(sid, mr)
-  const receipt = await tx.wait()
-  return receipt.hash
+  return sendTx(async (nonce) => {
+    const tx = await contract.startSession(sid, mr, { nonce })
+    const receipt = await tx.wait()
+    return receipt.hash
+  })
 }
 
 export const syncProgress = async (sessionId, lastPacketHashHex, stepId) => {
   if (!contract) throw new Error('Blockchain service not initialized')
   const sid = sessionIdToBytes32(sessionId)
   const lh = toBytes32Hex(lastPacketHashHex)
-  const tx = await contract.syncProgress(sid, lh, stepId)
-  const receipt = await tx.wait()
-  return receipt.hash
+  return sendTx(async (nonce) => {
+    const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
+    const receipt = await tx.wait()
+    return receipt.hash
+  })
 }
 
 export const completeSession = async (sessionId, finalPacketHashHex) => {
   if (!contract) throw new Error('Blockchain service not initialized')
   const sid = sessionIdToBytes32(sessionId)
   const fh = toBytes32Hex(finalPacketHashHex)
-  const tx = await contract.completeSession(sid, fh)
-  const receipt = await tx.wait()
-  return receipt.hash
+  return sendTx(async (nonce) => {
+    const tx = await contract.completeSession(sid, fh, { nonce })
+    const receipt = await tx.wait()
+    return receipt.hash
+  }) 
 }
 
 export const getSession = async (sessionId) => {
