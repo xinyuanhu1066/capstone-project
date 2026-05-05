@@ -12,9 +12,9 @@ export interface SessionContext {
   hyperparams: Record<string, number | string | boolean | null | undefined>;
   model_cid: string;
   model_hash: string;
-  start_block: number;
+  start_block_number: number;
   start_tx_hash: string;
-  end_block: number;
+  end_block_number: number;
   end_tx_hash: string;
 }
 
@@ -117,22 +117,14 @@ export const verifyCheckpoint = async (sessionId: number, epochId: number) => {
 // Identifier Refactor Utils (Plan Section 3, Task 3)
 
 export const formatOnChainReceipt = (txHash: string | undefined, blockNumber?: number): string => {
-  if (!txHash || txHash === 'N/A') return 'Pending...';
-  if (blockNumber != null) return `Block #${blockNumber}`;
-  // Derive a pseudo block number from the tx hash for display purposes
-  const pseudo = parseInt(txHash.replace('0x', '').substring(0, 6), 16) % 1000000;
-  return `Block #${pseudo}`;
+  if (blockNumber != null && txHash && txHash !== 'N/A')
+    return `Block #${blockNumber} · TX-${txHash.substring(txHash.length - 4).toUpperCase()}`;
+  else
+    return 'N/A'
 };
 
 export const formatStorageReceipt = (cid: string | undefined): string => {
-  if (!cid || cid === 'N/A') return 'N/A';
-  // Show first 8 + last 6 chars of CID for readability
-  if (cid.length <= 16) return cid;
-  return `${cid.substring(0, 8)}…${cid.substring(cid.length - 6)}`;
-};
-
-export const resolveIdenticonColor = (hash: string): string => {
-  if (!hash) return 'var(--accent-cyan)';
-  const hue = parseInt(hash.substring(0, 8), 16) % 360;
-  return `hsl(${hue}, 70%, 50%)`;
+  if (!cid || cid === 'N/A')
+    return 'N/A';
+  return `STR-${cid.substring(cid.length - 4).toUpperCase()}`;
 };

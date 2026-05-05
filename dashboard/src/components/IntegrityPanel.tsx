@@ -15,12 +15,23 @@ import {
   Shield, Database, Cpu, Activity, AlertTriangle, Loader2,
   Brain
 } from 'lucide-react';
+import Tooltip from './Tooltip';
+
+interface StepNodeData {
+  stepId: number;
+  fullData: StepContext;
+  isFirstInSeq: boolean;
+  isLastInSeq: boolean;
+  isRowEnd: boolean;
+  isOddRow: boolean;
+  posInRow: number;
+}
 
 interface IntegrityPanelProps {
   /** Structured selection context (session | epoch | step | null) */
   selectionContext?: SelectionContext;
   /** Legacy: kept for backward compat; ignored when selectionContext is provided */
-  selectedNode?: StepContext | EpochContext | null;
+  selectedNode?: StepNodeData | EpochContext | null;
 }
 
 interface VerificationResult {
@@ -63,13 +74,30 @@ const Card: React.FC<{ title: string; icon: React.ReactNode; children: React.Rea
 
 // ─── SESSION panel ────────────────────────────────────────────────────────────
 
+const formatDuration = (start: string, end: string) => {
+  const diff = Math.abs(new Date(end).getTime() - new Date(start).getTime());
+  
+  const seconds = Math.floor((diff / 1000) % 60);
+  const minutes = Math.floor((diff / (1000 * 60)) % 60);
+  const hours = Math.floor((diff / (1000 * 60 * 60)) % 24);
+  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+
+  const parts = [];
+  if (days > 0) parts.push(`${days}d`);
+  if (hours > 0) parts.push(`${hours}h`);
+  if (minutes > 0) parts.push(`${minutes}m`);
+  if (parts.length === 0 || seconds > 0) parts.push(`${seconds}s`);
+
+  return parts.join(' ');
+};
+
 const SessionPanel: React.FC<{
   session: SessionContext;
   verifying: boolean;
   onVerify: () => void;
 }> = ({ session, verifying, onVerify }) => {
   const datasetLabel = session.dataset_name
-    ? `${session.dataset_name}${session.dataset_version ? ` v${session.dataset_version}` : ''}`
+    ? `${session.dataset_name}${session.dataset_version ? ` ${session.dataset_version}` : ''}`
     : 'N/A';
 
   return (
@@ -83,15 +111,87 @@ const SessionPanel: React.FC<{
         <Row label="Total Steps" value={String(session.steps)} />
         <Row
           label="Duration"
-          value={`${new Date(session.start_time).toLocaleString()} → ${new Date(session.end_time).toLocaleString()}`}
+          value={
+            <Tooltip content={
+              <div style={{
+                display: 'grid', 
+                gridTemplateColumns: 'auto 1fr',
+                gap: '4px 12px',
+                fontFamily: 'var(--font-mono)',
+                fontSize: '11px'
+              }}>
+                <span style={{ color: '#64748b' }}>START:</span>
+                <span style={{ color: '#fff' }}>{new Date(session.start_time).toLocaleString()}</span>
+                
+                <span style={{ color: '#64748b' }}>END:</span>
+                <span style={{ color: '#fff' }}>{new Date(session.end_time).toLocaleString()}</span>
+              </div>
+            }>
+              <span style={{ cursor: 'pointer' }}>
+                {formatDuration(session.start_time, session.end_time)}
+              </span>
+            </Tooltip>
+          }
         />
-        <Row label="Hyperparams" value={String(session.hyperparams)} />
+        <Row 
+          label="Hyperparams" 
+          value={
+            <pre style={{ 
+              fontSize: '10px', 
+              background: 'rgba(0,0,0,0.3)', 
+              padding: '6px', 
+              borderRadius: '4px',
+              margin: '4px 0',
+              // color: '#94a3b8',
+              border: '1px solid #1e293b',
+              maxHeight: '120px',
+              overflowY: 'auto',
+              overflowX: 'hidden',
+              whiteSpace: 'pre-wrap',
+              wordBreak: 'break-all'
+            }}>
+              {JSON.stringify(session.hyperparams, null, 2)}
+            </pre>
+          } 
+        />
       </Card>
 
       <Card title="Dataset" icon={<Database size={15} />}>
         <Row label="Version" value={datasetLabel} />
-        <Row label="On-Chain Receipt" value={session.start_block} />
-        <Row label="Off-Chain Receipt" value={session.dataset_cid} />
+        <Row
+          label="On-Chain Receipt"
+          value={
+            <Tooltip
+              copyValue={session.start_tx_hash}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {session.start_tx_hash}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {formatOnChainReceipt(session.start_tx_hash, session.start_block_number)}
+              </span>
+            </Tooltip>
+          }
+        />
+        <Row
+          label="Off-Chain Receipt"
+          value={
+            <Tooltip
+              copyValue={session.dataset_cid}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {session.dataset_cid}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {formatStorageReceipt(session.dataset_cid)}
+              </span>
+            </Tooltip>
+          }
+        />
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
@@ -101,8 +201,40 @@ const SessionPanel: React.FC<{
       </Card>
 
       <Card title="Model" icon={<Brain size={15} />}>
-        <Row label="On-Chain Receipt" value={session.end_block} />
-        <Row label="Off-Chain Receipt" value={session.model_cid} />
+        <Row
+          label="On-Chain Receipt"
+          value={
+            <Tooltip
+              copyValue={session.end_tx_hash}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {session.end_tx_hash}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {formatOnChainReceipt(session.end_tx_hash, session.end_block_number)}
+              </span>
+            </Tooltip>
+          }
+        />
+        <Row
+          label="Off-Chain Receipt"
+          value={
+            <Tooltip
+              copyValue={session.model_cid}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {session.model_cid}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {formatStorageReceipt(session.model_cid)}
+              </span>
+            </Tooltip>
+          }
+        />
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
@@ -143,11 +275,37 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
       <Card title="Checkpoint" icon={<Database size={15} />}>
         <Row
           label="On-Chain Receipt"
-          value={onChainReceipt}
+          value={
+            <Tooltip
+              copyValue={epoch.tx_hash}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {epoch.tx_hash}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {onChainReceipt}
+              </span>
+            </Tooltip>
+          }
         />
         <Row
           label="Off-Chain Receipt"
-          value={storageReceipt}
+          value={
+            <Tooltip
+              copyValue={epoch.checkpoint_cid}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {epoch.checkpoint_cid}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {storageReceipt}
+              </span>
+            </Tooltip>
+          }
         />
         <button
           className="btn-primary"
@@ -163,70 +321,71 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
 // ─── STEP panel ───────────────────────────────────────────────────────────────
 
 const StepPanel: React.FC<{
-  packet: StepContext;
+  data: StepNodeData;
   verificationResult: VerificationResult | null;
-}> = ({ packet, verificationResult }) => {
+}> = ({ data, verificationResult }) => {
   const isVerified = verificationResult?.is_valid;
   const verifying = null;
-  const statusColor = verifying
-    ? 'var(--warning)'
-    : isVerified === false
-    ? 'var(--danger)'
-    : 'var(--success)';
 
-  const storageReceipt = formatStorageReceipt(packet.cid);
-  const onChainReceipt = formatOnChainReceipt(packet.tx_hash);
+  const storageReceipt = formatStorageReceipt(data.fullData.cid);
+  const onChainReceipt = formatOnChainReceipt(data.fullData.tx_hash, data.fullData.block_number);
 
   return (
     <>
       <h2 style={{ color: 'var(--accent-cyan)', fontSize: '1.1rem', marginBottom: '0.75rem' }}>
-        STEP #{packet.step_id}
+        STEP #{data.stepId}
       </h2>
-
-      {/* Status badge */}
-      <div style={{
-        padding: '10px 14px',
-        border: '1px solid var(--border-color)',
-        borderRadius: '4px',
-        background: 'rgba(255,255,255,0.02)',
-        display: 'flex',
-        alignItems: 'center',
-        gap: '10px',
-      }}>
-        {verifying ? (
-          <Loader2 size={16} className="animate-spin" color="var(--warning)" />
-        ) : isVerified === false ? (
-          <AlertTriangle size={16} color="var(--danger)" />
-        ) : (
-          <Shield size={16} color="var(--success)" />
-        )}
-        <div>
-          <span style={{ fontWeight: 700, color: statusColor, fontSize: '0.85rem' }}>
-            {verifying ? 'VERIFYING…' : isVerified === false ? 'INTEGRITY BREACH' : 'VERIFIED'}
-          </span>
-          <div style={{ fontSize: '0.72rem', color: 'var(--text-secondary)' }}>
-            {new Date(packet.timestamp).toLocaleString()}
-          </div>
-        </div>
-      </div>
 
       <Card title="On-Chain Receipt" icon={<Shield size={15} />}>
         <Row
           label=""
-          value={onChainReceipt}
+          value={
+            <Tooltip
+              copyValue={data.fullData.tx_hash}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {data.fullData.tx_hash}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {onChainReceipt}
+              </span>
+            </Tooltip>
+          }
         />
       </Card>
 
       <Card title="Off-Chain Receipt" icon={<Database size={15} />}>
         <Row
           label=""
-          value={storageReceipt}
+          value={
+            <Tooltip
+              copyValue={data.fullData.cid}
+              content={
+                <div style={{ wordBreak: 'break-all', maxWidth: '240px', color: '#94a3b8', lineHeight: '1.4' }}>
+                  {data.fullData.cid}
+                </div>
+              }
+            >
+              <span style={{ cursor: 'pointer' }}>
+                {storageReceipt}
+              </span>
+            </Tooltip>
+          }
         />
       </Card>
 
       <Card title="Metrics" icon={<Cpu size={15} />}>
-        <pre style={{ fontSize: '0.75rem', color: 'var(--text-primary)', margin: 0 }}>
-          {JSON.stringify(packet.metrics, null, 2)}
+        <pre style={{
+          fontSize: '10px', 
+          maxHeight: '120px',
+          overflowY: 'auto',
+          overflowX: 'hidden',
+          whiteSpace: 'pre-wrap',
+          wordBreak: 'break-all'
+        }}>
+          {JSON.stringify(data.fullData.metrics, null, 2)}
         </pre>
       </Card>
     </>
@@ -248,7 +407,7 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
     : selectedNode
       ? 'epoch' in selectedNode
         ? { type: 'epoch', data: selectedNode as EpochContext }
-        : { type: 'step',  data: selectedNode as StepContext }
+        : { type: 'step',  data: selectedNode as StepNodeData }
       : null;
 
   useEffect(() => {
@@ -283,10 +442,10 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
   return (
     <div className="integrity-panel" style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
       {resolved.type === 'session' && <SessionPanel session={resolved.data} />}
-      {resolved.type === 'epoch'   && <EpochPanel   epoch={resolved.data} />}
+      {resolved.type === 'epoch'   && <EpochPanel epoch={resolved.data} />}
       {resolved.type === 'step'    && (
         <StepPanel
-          packet={resolved.data}
+          data={resolved.data}
           verifying={verifying}
           verificationResult={verificationResult}
           onVerify={handleVerify}

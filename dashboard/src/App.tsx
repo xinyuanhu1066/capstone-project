@@ -89,12 +89,12 @@ function App() {
     loadData();
   };
 
-  const handleNodeClick = (packet: StepContext | EpochContext | null) => {
-    if (packet === null) {
+  const handleNodeClick = (node: StepContext | EpochContext | null) => {
+    if (node === null) {
       setSelectedNode(null);
       setSelectionContext({ type: 'session', data: selectedSession! });
     } else {
-      setSelectedNode(packet);
+      setSelectedNode(node);
       setSelectionContext(null);
     }
   };
