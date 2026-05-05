@@ -2,14 +2,13 @@ import os
 import torch
 import threading
 import queue
-import types
+import fnmatch
 import functools
 import sys
 import requests
 import uuid
 import time
 import io
-import hashlib
 import zstandard as zstd
 from typing import Any, Dict, Optional, List, Tuple
 from audit_sdk.hashing_engine.engine import HashingEngine
@@ -33,7 +32,7 @@ class TrainingWatcher:
     def __init__(
             self, dataset_dir: Optional[str] = None,
             step_interval: int = 100, dataset_name: str = "Unknown",
-            exclude: list = None):
+            exclude: list = []):
         if hasattr(self, '_initialized') and self._initialized:
             return
         
@@ -48,7 +47,7 @@ class TrainingWatcher:
         self.current_loss = 0.0
         self.current_epoch = 0
         self.hyperparams = {}
-        self.exclude = set(exclude or ["dummy.txt"])
+        self.exclude = set(exclude + ["dummy.txt"])
         
         # Risk Mitigation: Step-level metrics tracking for anomaly detection
         self.step_metrics: List[float] = []
@@ -94,6 +93,12 @@ class TrainingWatcher:
             print(f"[Watcher Error] Version resolution failed: {e}")
         return "v1.0"
 
+    def _should_exclude(self, filename: str) -> bool:
+        for pattern in self.exclude:
+            if fnmatch.fnmatch(filename, pattern):
+                return True
+        return False
+
     def _snapshot_dataset(self) -> str:
         """Upload dataset to IPFS to get a Root CID (Plan Section 2.A)."""
         if not os.path.exists(self.dataset_dir):
@@ -104,7 +109,7 @@ class TrainingWatcher:
         files_to_upload = []
         for root, _, files in os.walk(self.dataset_dir):
             for file in files:
-                if file in self.exclude:
+                if self._should_exclude(file):
                     continue
                 full_path = os.path.join(root, file)
                 rel_path = os.path.relpath(full_path, self.dataset_dir)
@@ -135,10 +140,10 @@ class TrainingWatcher:
         file_paths = []
         for root, _, files in os.walk(self.dataset_dir):
             for file in files:
-                if file in self.exclude:
+                if self._should_exclude(file):
                     continue
                 file_paths.append(os.path.join(root, file))
-        return self.hashing_engine.calculate_merkle_root(file_paths)
+        return self.hashing_engine.calculate_merkle_root(file_paths, base_dir=self.dataset_dir)
 
     def _apply_global_patches(self):
         # 1. Patch Tensor.backward to capture loss values automatically
@@ -348,7 +353,7 @@ class TrainingWatcher:
                 BLOB_API_URL, 
                 data=blob, 
                 headers={'Content-Type': 'application/octet-stream'},
-                timeout=30
+                timeout=60
             )
             if response.status_code == 201:
                 return response.json().get("cid")
@@ -452,8 +457,19 @@ class _SentinelIter:
         try: return len(self._inner)
         except: return 0
 
-def init(dataset_dir: Optional[str] = None, step_interval: int = 100, hyperparams: Optional[Dict[str, Any]] = None, dataset_name: str = "Unknown"):
-    watcher = TrainingWatcher(dataset_dir=dataset_dir, step_interval=step_interval, dataset_name=dataset_name)
+def init(
+        dataset_dir: Optional[str] = None,
+        step_interval: int = 100,
+        hyperparams: Optional[Dict[str, Any]] = None,
+        dataset_name: str = "Unknown",
+        exclude: list = []
+    ):
+    watcher = TrainingWatcher(
+        dataset_dir=dataset_dir,
+        step_interval=step_interval,
+        dataset_name=dataset_name,
+        exclude=exclude
+    )
     if hyperparams:
         watcher.configure(hyperparams)
     watcher.buffer.put({"type": "session", "action": "start"})

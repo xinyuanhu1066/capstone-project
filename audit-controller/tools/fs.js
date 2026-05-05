@@ -1,10 +1,7 @@
 import { CID } from 'multiformats/cid'
-import { mfs } from '@helia/mfs'
-import { Readable } from 'stream'
+import { unixfs } from '@helia/unixfs'
 import fsPromises from 'fs/promises';
 import path from 'path';
-import { createWriteStream } from 'fs';
-import { pipeline } from 'stream/promises';
 
 /**
  * Download IPFS directory from Helia to local filesystem
@@ -13,39 +10,30 @@ import { pipeline } from 'stream/promises';
  * @param {string} destination - Local storage path
  */
 export const downloadDirectory = async (helia, cidStr, destination) => {
-  const mutableFs = mfs(helia)
-  const workDir = `/download-${Date.now()}`
+  const ufs = unixfs(helia)
+  const rootCid = CID.parse(cidStr)
 
-  await fs.cp(CID.parse(cidStr), workDir)
-
-  try {
-    await fsPromises.mkdir(destination, { recursive: true })
-    await _walkAndDownload(fs, workDir, destination)
-  } finally {
-    await fs.rm(workDir, { recursive: true }).catch(() => {})
-  }
+  await fsPromises.mkdir(destination, { recursive: true })
+  await _walkByCid(ufs, rootCid, destination)
 }
 
-const _walkAndDownload = async (fs, mfsPath, localPath) => {
-  await fsPromises.mkdir(localPath, { recursive: true })
+const _walkByCid = async (ufs, cid, localPath) => {
+  const stat = await ufs.stat(cid)
 
-  for await (const entry of fs.ls(mfsPath)) {
-    const childMfsPath = `${mfsPath}/${entry.name}`
-    const childLocalPath = path.join(localPath, entry.name)
-
-    if (entry.type === 'directory') {
-      await _walkAndDownload(fs, childMfsPath, childLocalPath)
-    } else {
-      const writeStream = createWriteStream(childLocalPath)
-      try {
-        await pipeline(
-          Readable.from(fs.cat(childMfsPath)),
-          writeStream
-        )
-      } catch (err) {
-        console.error(`[IPFS Stream Error] Failed to write ${entry.name}:`, err)
-        throw err
-      }
+  if (stat.type === 'directory') {
+    await fsPromises.mkdir(localPath, { recursive: true })
+    for await (const entry of ufs.ls(cid)) {
+      const childLocalPath = path.join(localPath, entry.name)
+      await _walkByCid(ufs, entry.cid, childLocalPath)
     }
+  } else {
+    const chunks = []
+    let totalBytes = 0
+    for await (const chunk of ufs.cat(cid)) {
+      const buf = Buffer.from(chunk)
+      chunks.push(buf)
+      totalBytes += buf.length
+    }
+    await fsPromises.writeFile(localPath, Buffer.concat(chunks))
   }
 }

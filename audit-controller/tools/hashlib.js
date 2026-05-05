@@ -3,7 +3,7 @@ import stringify from 'json-stable-stringify'; // make sure the order of keys is
 import { execSync } from 'child_process';
 import path from 'path';
 import { pipeline } from 'stream/promises';
-import { mfs } from '@helia/mfs'
+import { unixfs } from '@helia/unixfs'
 import { Readable } from 'stream'
 
 /**
@@ -70,7 +70,11 @@ export const calculateDatasetMerkleRoot = (rootDir) => {
     try {
         // execute the Python script and pass the rootDir as an argument
         // the script will read all files under rootDir, calculate their hashes, build a Merkle Tree, and print the Merkle Root
-        const result = execSync(`python3 ${enginePath} ${rootDir}`, { encoding: 'utf-8' }).toString().trim();
+        const output = execSync(
+            `python3 ${enginePath} --rootdir ${rootDir} --exclude "dummy.txt" "*.gz"`,
+            { encoding: 'utf-8' }
+        ).toString().trim();
+        const result = output.split('\n').pop().trim();
         return `0x${result}`;
     } catch (error) {
         console.error('Error calculating Merkle Root:', error);
@@ -85,29 +89,13 @@ export const calculateDatasetMerkleRoot = (rootDir) => {
  * @returns {Promise<string>} - the calculated hexadecimal hash
  */
 export const calculateHashFromStream = async (helia, cidStr) => {
-    const mutableFs = mfs(helia)
-    const tmpPath = `/hash-${Date.now()}-${Math.random().toString(36).slice(2)}`
+    const ufs = unixfs(helia)
+    const cid = CID.parse(cidStr)
+    const hash = crypto.createHash('sha256')
 
-    await mutableFs.cp(`/ipfs/${cidStr}`, tmpPath)
-
-    try {
-        const hash = crypto.createHash('sha256')
-
-        await pipeline(
-            Readable.from(mutableFs.cat(tmpPath)),
-            async function* (source) {
-                for await (const chunk of source) {
-                    hash.update(chunk)
-                    yield chunk
-                }
-            }
-        )
-
-        return hash.digest('hex')
-    } catch (error) {
-        console.error('Stream-based hash calculation failed:', error)
-        throw error
-    } finally {
-        await mutableFs.rm(tmpPath).catch(() => {})
+    for await (const chunk of ufs.cat(cid)) {
+        hash.update(chunk)
     }
+
+    return hash.digest('hex')
 }

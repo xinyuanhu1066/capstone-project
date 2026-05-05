@@ -27,25 +27,23 @@ class HashingEngine:
         return hashlib.sha256(data).hexdigest()
 
     @staticmethod
-    def calculate_merkle_root(file_paths: List[str]) -> str:
+    def calculate_merkle_root(file_paths: List[str], base_dir: str = None) -> str:
         """
         Calculate Merkle Root of a list of files for data provenance.
         """
         if not file_paths:
             return ""
-        
+
         valid_paths = [p for p in file_paths if os.path.isfile(p)]
         if not valid_paths:
             return ""
         
-        if len(valid_paths) > 1:
-            common_prefix = os.path.commonpath(valid_paths)
-        else:
-            common_prefix = os.path.dirname(valid_paths[0])
+        if base_dir is None:
+            base_dir = os.path.commonpath(valid_paths) if len(valid_paths) > 1 else os.path.dirname(valid_paths[0])
 
         path_mapping = []
         for p in valid_paths:
-            rel_path = os.path.relpath(p, common_prefix)
+            rel_path = os.path.relpath(p, base_dir)
             path_mapping.append((rel_path, p))
 
         path_mapping.sort(key=lambda x: x[0])
@@ -76,8 +74,22 @@ class HashingEngine:
 
 if __name__ == "__main__":
     import argparse
+    import fnmatch
+
+    def _should_exclude(filename: str, exclude: set) -> bool:
+        for pattern in exclude:
+            if fnmatch.fnmatch(filename, pattern):
+                return True
+        return False
+
     parser = argparse.ArgumentParser(description="Hashing Engine for Audit SDK")
     parser.add_argument("--rootdir", help="Root directory for calculating Merkle root")
+    parser.add_argument(
+        "--exclude",
+        nargs="*",
+        default=["dummy.txt"],
+        help="Space-separated list of files",
+    )
     args = parser.parse_args()
     if args.rootdir:
         if not os.path.exists(args.rootdir):
@@ -86,8 +98,10 @@ if __name__ == "__main__":
         file_paths = []
         for root, _, files in os.walk(args.rootdir):
             for file in files:
+                if _should_exclude(file, args.exclude):
+                    continue
                 file_paths.append(os.path.join(root, file))
-        merkle_root = HashingEngine.calculate_merkle_root(file_paths)
+        merkle_root = HashingEngine.calculate_merkle_root(file_paths, base_dir=args.rootdir)
         print(merkle_root)
     else:
         print("No root directory provided. Exiting.")

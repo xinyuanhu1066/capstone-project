@@ -1,7 +1,6 @@
 import express from 'express'
 import { getDB, getHelia } from '../services/orbitdb.js'
 import { startSession, syncProgress, completeSession, getSession } from '../services/blockchain.js'
-import { mfs } from '@helia/mfs'
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import { auditAllPackets } from '../tools/validity.js'
@@ -12,6 +11,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import fsPromises from 'fs/promises';
+import { sha256 } from 'multiformats/hashes/sha2'
+import { UnixFS } from 'ipfs-unixfs'
+import * as dagPB from '@ipld/dag-pb'
 
 const router = express.Router()
 
@@ -93,34 +95,50 @@ router.post('/dataset/directory', async (req, res) => {
     const { files } = req.body
     const helia = getHelia()
     if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    
-    const mutableFs = mfs(helia)
-    const workDir = `/dataset-${Date.now()}`
-    await mutableFs.mkdir(workDir, { force: true })
 
-    console.log(`[Audit Controller] Building directory structure for ${files.length} files...`)
+    console.log(`[Audit Controller] Building directory for ${files.length} files...`)
 
-    for (const file of files) {
-      try {
-        const destPath = `${workDir}/${file.path}`
-        const parentDir = destPath.substring(0, destPath.lastIndexOf('/'))
-        await mutableFs.mkdir(parentDir, { force: true })
-        await mutableFs.cp(CID.parse(file.cid), destPath, { force: true })
-      } catch (err) {
-        console.warn(`[Audit Controller] Failed to link file ${file.path}:`, err.message)
+    const buildTree = (files) => {
+      const tree = {}
+      for (const file of files) {
+        const parts = file.path.split('/')
+        let node = tree
+        for (let i = 0; i < parts.length - 1; i++) {
+          if (!node[parts[i]]) node[parts[i]] = {}
+          node = node[parts[i]]
+        }
+        node[parts[parts.length - 1]] = CID.parse(file.cid)
       }
+      return tree
     }
 
-    const { cid } = await mutableFs.stat(workDir)
-    const finalCid = cid.toString()
-    // clear MFS working directory (data in blockstore is unaffected)
-    await mutableFs.rm(workDir, { recursive: true })
+    const createDirNode = async (helia, node) => {
+      const links = []
+      for (const [name, value] of Object.entries(node)) {
+        if (value instanceof CID) {
+          links.push(dagPB.createLink(name, 0, value))
+        } else {
+          const childCid = await createDirNode(helia, value)
+          links.push(dagPB.createLink(name, 0, childCid))
+        }
+      }
 
-    console.log(`[Audit Controller] Dataset directory finalized | Root CID: ${finalCid}`)
+      const unixfsDir = new UnixFS({ type: 'directory' })
+      const node2 = dagPB.createNode(unixfsDir.marshal(), links)
+      const bytes = dagPB.encode(node2)
+      const hash = await sha256.digest(bytes)
+      const cid = CID.create(1, dagPB.code, hash)
+      await helia.blockstore.put(cid, bytes)
+      return cid
+    }
 
-    res.status(201).json({ status: 'success', root_cid: finalCid, file_count: files.length })
+    const tree = buildTree(files)
+    const rootCid = await createDirNode(helia, tree)
+
+    console.log(`[Audit Controller] Root CID: ${rootCid}`)
+    res.status(201).json({ status: 'success', root_cid: rootCid.toString(), file_count: files.length })
   } catch (error) {
-    console.error('[Audit Controller Error] Failed to create directory:', error)
+    console.error('[Audit Controller Error]', error)
     res.status(500).json({ error: error.message })
   }
 })
@@ -260,6 +278,7 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
 
     const entries = await db.all()
     const sessionStartPacket = entries.find(e => 
+      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
       e.value.packet.session_id === sessionId && 
       e.value.packet.type === 'session' && 
       e.value.packet.action === 'start'

@@ -80,7 +80,12 @@ def main():
     # Completely Non-Invasive Initialization
     # One line of code to enable full auditing
     hyperparams = {"lr": LEARNING_RATE, "momentum": MOMENTUM, "batch_size": BATCH_SIZE}
-    watcher = audit_sdk.init(dataset_dir=data_path, step_interval=100, hyperparams=hyperparams, dataset_name="MNIST")
+    watcher = audit_sdk.init(
+        dataset_dir=data_path,
+        step_interval=100,
+        hyperparams=hyperparams,
+        dataset_name="MNIST",
+        exclude=["*.gz"])
 
     # Data Transformations
     transform = transforms.Compose([

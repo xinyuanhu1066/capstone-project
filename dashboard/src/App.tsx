@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import './styles/theme.css';
 import { fetchPackets, fetchSessions, type SessionContext, type StepContext, type EpochContext, type SelectionContext } from './services/api';
 import LineageMap from './components/LineageMap';
+import { type StepNodeData } from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
 import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
 
@@ -9,7 +10,7 @@ function App() {
   const [sessions, setSessions] = useState<SessionContext[]>([]);
   const [selectedSessionId, setSelectedSessionId] = useState<string | null>(null);
   const [steps, setSteps] = useState<StepContext[]>([]);
-  const [selectedNode, setSelectedNode] = useState<StepContext | EpochContext | null>(null);
+  const [selectedNode, setSelectedNode] = useState<StepNodeData | EpochContext | null>(null);
   const [loading, setLoading] = useState(true);
   const [epochs, setEpochs] = useState<EpochContext[]>([]);
   const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);

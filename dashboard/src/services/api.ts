@@ -70,7 +70,7 @@ export const fetchPackets = async (sessionId: string): Promise<StepContext[]> =>
   }
 };
 
-export const verifyLineage = async (sessionId: number) => {
+export const verifyLineage = async (sessionId: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
@@ -81,7 +81,7 @@ export const verifyLineage = async (sessionId: number) => {
   }
 };
 
-export const verifyDataset = async (sessionId: number) => {
+export const verifyDataset = async (sessionId: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/dataset`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
@@ -92,7 +92,7 @@ export const verifyDataset = async (sessionId: number) => {
   }
 };
 
-export const verifyModel = async (sessionId: number) => {
+export const verifyModel = async (sessionId: string) => {
   try {
     const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/model`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);
@@ -103,7 +103,7 @@ export const verifyModel = async (sessionId: number) => {
   }
 };
 
-export const verifyCheckpoint = async (sessionId: number, epochId: number) => {
+export const verifyCheckpoint = async (sessionId: string, epochId: number) => {
   try {
     const response = await fetch(`${API_BASE_URL}/audit/verify/session/${sessionId}/epoch/${epochId}/checkpoint`);
     if (!response.ok) throw new Error(`HTTP ${response.status}: Verification failed`);

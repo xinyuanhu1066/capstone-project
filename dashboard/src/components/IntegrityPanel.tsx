@@ -34,14 +34,27 @@ interface IntegrityPanelProps {
   selectedNode?: StepNodeData | EpochContext | null;
 }
 
-interface VerificationResult {
+interface DatasetVerifyResult {
   is_valid: boolean;
-  details?: {
-    cid_match?: boolean;
-    merkle_match?: boolean;
-    local_cid?: string;
-    blockchain_cid?: string;
+  details: {
+    anchor_merkle_root: string;
+    calculated_merkle_root: string;
+    dataset_cid: string;
   };
+}
+
+interface ModelVerifyResult {
+  is_valid: boolean;
+  details: {
+    target_model_hash: string;
+    calculated_model_hash: string;
+    model_cid: string;
+  };
+}
+
+interface LineageVerifyResult {
+  modelValidation: string;
+  stepsValidation: Map<number, string>;
 }
 
 // ─── Shared primitives ────────────────────────────────────────────────────────
@@ -59,7 +72,7 @@ const Row: React.FC<{ label: string; value: React.ReactNode; accent?: string }> 
   </div>
 );
 
-const Card: React.FC<{ title: string; icon: React.ReactNode; children: React.ReactNode }> = ({
+const Card: React.FC<{ title: React.ReactNode; icon: React.ReactNode; children: React.ReactNode }> = ({
   title, icon, children,
 }) => (
   <section>
@@ -93,12 +106,50 @@ const formatDuration = (start: string, end: string) => {
 
 const SessionPanel: React.FC<{
   session: SessionContext;
-  verifying: boolean;
-  onVerify: () => void;
-}> = ({ session, verifying, onVerify }) => {
+}> = ({ session }) => {
   const datasetLabel = session.dataset_name
     ? `${session.dataset_name}${session.dataset_version ? ` ${session.dataset_version}` : ''}`
     : 'N/A';
+
+  const [verifyingDataset, setVerifyingDataset] = useState<boolean>(false);
+  const [verifyingModel, setVerifyingModel] = useState<boolean>(false);
+  const [verifyingLineage, setVerifyingLineage] = useState<boolean>(false);
+  const [datasetVerifyResult, setDatasetVerifyResult] = useState<DatasetVerifyResult | null>(null);
+  const [modelVerifyResult, setModelVerifyResult] = useState<ModelVerifyResult | null>(null);
+  const [lineageVerifyResult, setLineageVerifyResult] = useState<LineageVerifyResult | null>(null);
+
+  const handleVerifyDataset = async () => {
+    try {
+      setVerifyingDataset(true);
+      setDatasetVerifyResult(null);
+      const result = await verifyDataset(session.session_id);
+      setDatasetVerifyResult(result);
+    } finally {
+      setVerifyingDataset(false);
+    }
+  };
+
+  const handleVerifyModel = async () => {
+    try {
+      setVerifyingModel(true);
+      setModelVerifyResult(null);
+      const result = await verifyModel(session.session_id);
+      setModelVerifyResult(result);
+    } finally {
+      setVerifyingModel(false);
+    }
+  };
+
+  const handleVerifyLineage = async () => {
+    try {
+      setVerifyingLineage(true);
+      setLineageVerifyResult(null);
+      const result = await verifyLineage(session.session_id);
+      setLineageVerifyResult(result);
+    } finally {
+      setVerifyingLineage(false);
+    }
+  };
 
   return (
     <>
@@ -156,7 +207,35 @@ const SessionPanel: React.FC<{
         />
       </Card>
 
-      <Card title="Dataset" icon={<Database size={15} />}>
+      <Card
+        title={
+          <div style={{ display: 'flex', alignItems: 'center', width: '100%' }}>
+          <span>Dataset</span>
+          {datasetVerifyResult && (
+            <div style={{
+              marginLeft: 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+              color: datasetVerifyResult.is_valid ? 'var(--success)' : 'var(--danger)'
+            }}>
+              {datasetVerifyResult.is_valid ? (
+                  <>
+                    <Shield size={14} />
+                    <span style={{ fontSize: '0.7rem' }}>Verified</span>
+                  </>
+                ) : (
+                  <>
+                    <AlertTriangle size={14} />
+                    <span style={{ fontSize: '0.7rem' }}>Invalid</span>
+                  </>
+                ) }
+            </div>
+          )}
+        </div>
+        }
+        icon={<Database size={15} />}
+      >
         <Row label="Version" value={datasetLabel} />
         <Row
           label="On-Chain Receipt"
@@ -195,8 +274,10 @@ const SessionPanel: React.FC<{
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+          onClick={handleVerifyDataset}
+          disabled={verifyingDataset}
         >
-          Verify Dataset
+          {verifyingDataset ? 'Verifying…' : 'Verify Dataset'}
         </button>
       </Card>
 
@@ -238,18 +319,20 @@ const SessionPanel: React.FC<{
         <button
           className="btn-primary"
           style={{ width: '100%', marginTop: 'auto', padding: '10px' }}
+          onClick={handleVerifyModel}
+          disabled={verifyingModel}
         >
-          Verify Model
+          {verifyingModel ? 'Verifying…' : 'Verify Model'}
         </button>
       </Card>
 
       <button
         className="btn-primary"
         style={{ width: '100%', marginTop: 'auto' }}
-        onClick={onVerify}
-        disabled={verifying}
+        onClick={handleVerifyLineage}
+        disabled={verifyingLineage}
       >
-        {verifying ? 'VERIFYING…' : 'VERIFY LINEAGE'}
+        {verifyingLineage ? 'Verifying…' : 'Verify Lineage'}
       </button>
     </>
   );
@@ -322,11 +405,7 @@ const EpochPanel: React.FC<{ epoch: EpochContext }> = ({ epoch }) => {
 
 const StepPanel: React.FC<{
   data: StepNodeData;
-  verificationResult: VerificationResult | null;
-}> = ({ data, verificationResult }) => {
-  const isVerified = verificationResult?.is_valid;
-  const verifying = null;
-
+}> = ({ data }) => {
   const storageReceipt = formatStorageReceipt(data.fullData.cid);
   const onChainReceipt = formatOnChainReceipt(data.fullData.tx_hash, data.fullData.block_number);
 
@@ -398,9 +477,6 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
   selectionContext,
   selectedNode,
 }) => {
-  const [verifying, setVerifying] = useState(false);
-  const [verificationResult, setVerificationResult] = useState<VerificationResult | null>(null);
-
   // Resolve context — prefer new prop, fall back to legacy
   const resolved: SelectionContext = selectionContext !== null
     ? selectionContext
@@ -409,24 +485,6 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
         ? { type: 'epoch', data: selectedNode as EpochContext }
         : { type: 'step',  data: selectedNode as StepNodeData }
       : null;
-
-  useEffect(() => {
-    const t = setTimeout(() => { setVerificationResult(null); setVerifying(false); }, 0);
-    return () => clearTimeout(t);
-  }, [resolved]);
-
-  const handleVerify = async () => {
-    if (!resolved || resolved.type !== 'step') return;
-    setVerifying(true);
-    try {
-      const result = await verifyStepIntegrity(resolved.data.step_id);
-      setVerificationResult(result);
-    } catch {
-      setVerificationResult({ is_valid: false });
-    } finally {
-      setVerifying(false);
-    }
-  };
 
   if (!resolved) {
     return (
@@ -444,12 +502,7 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
       {resolved.type === 'session' && <SessionPanel session={resolved.data} />}
       {resolved.type === 'epoch'   && <EpochPanel epoch={resolved.data} />}
       {resolved.type === 'step'    && (
-        <StepPanel
-          data={resolved.data}
-          verifying={verifying}
-          verificationResult={verificationResult}
-          onVerify={handleVerify}
-        />
+        <StepPanel data={resolved.data} />
       )}
     </div>
   );

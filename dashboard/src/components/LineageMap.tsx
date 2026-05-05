@@ -31,7 +31,7 @@ const ARROW_BLUE  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color
 const ARROW_DASH  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color: '#00f2ff' };
 
 // ─── Step node ────────────────────────────────────────────────────────────────
-interface StepNodeData {
+export interface StepNodeData {
   stepId: number;
   fullData: StepContext;
   // Add these layout flags:
@@ -84,9 +84,11 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
       )}
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
-        <div style={{ fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
-          <Shield size={9} /> SECURED
-        </div>
+        {false && (
+          <div style={{ fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <Shield size={9} /> SECURED
+          </div>
+        )}
       </div>
     </div>
   );
