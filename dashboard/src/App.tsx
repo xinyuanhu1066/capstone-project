@@ -4,6 +4,7 @@ import { fetchPackets, fetchSessions, type SessionContext, type StepContext, typ
 import LineageMap from './components/LineageMap';
 import { type StepNodeData } from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
+import { type LineageVerifyResult } from './components/IntegrityPanel';
 import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
 
 function App() {
@@ -16,6 +17,7 @@ function App() {
   const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);
   const [selectedSession, setSelectedSession] = useState<SessionContext | null>(null); 
   const [lineageResult, setLineageResult] = useState<LineageVerifyResult | null>(null);
+  const lineageResultsRef = useRef<Record<string, LineageVerifyResult>>({});
 
   // Use a ref to store the current session ID to avoid dependency cycle in loadData
   const selectedSessionIdRef = useRef<string | null>(null);
@@ -73,6 +75,7 @@ function App() {
 
   const handleSessionSelect = (session: SessionContext) => {
     setSelectedNode(null);
+    setLineageResult(lineageResultsRef.current[session.session_id] ?? null);
   
     if (session.session_id === selectedSessionId) {
       setSelectionContext({ type: 'session', data: selectedSession! });
@@ -193,7 +196,12 @@ function App() {
       <IntegrityPanel
         selectionContext={selectionContext}
         selectedNode={selectedNode}
-        onLineageVerified={setLineageResult}
+        onLineageVerified={(result) => {
+          if (selectedSessionId && result) {
+            lineageResultsRef.current[selectedSessionId] = result;
+          }
+          setLineageResult(result);
+        }}
       />
     </div>
   );

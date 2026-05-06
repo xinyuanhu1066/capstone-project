@@ -213,6 +213,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
   const [expandedEpochs, setExpandedEpochs] = useState<Set<number>>(new Set());
   const lastKeyRef = useRef('');
+  const expandedEpochsRef = useRef<Record<string, Set<number>>>({});
 
   const toggleEpoch = useCallback((epoch: number) => {
     setExpandedEpochs(prev => {
@@ -221,6 +222,22 @@ const LineageMap: React.FC<LineageMapProps> = ({
       return next;
     });
   }, []);
+
+  const sessionIdRef = useRef<string>('');
+
+  useEffect(() => {
+    const currentSessionId = steps.length > 0 ? steps[0].session_id : '';
+
+    if (currentSessionId !== sessionIdRef.current) {
+      if (sessionIdRef.current) {
+        expandedEpochsRef.current[sessionIdRef.current] = expandedEpochs;
+      }
+      sessionIdRef.current = currentSessionId;
+
+      setExpandedEpochs(expandedEpochsRef.current[currentSessionId] ?? new Set());
+      lastKeyRef.current = '';
+    }
+  }, [steps]);
 
   // Build a quick lookup: step_id → true when lineage says "OK"
   const securedSteps = React.useMemo<Set<number>>(() => {
