@@ -126,19 +126,24 @@ export const getSession = async (sessionId) => {
 export const getAnchorsFromChain = async (sessionId, blockHeight) => {
   if (!contract) throw new Error('Blockchain service not initialized')
 
-  // 1. Define event filter for specific sessionId
-  const filter = contract.filters.AuditAnchored(sessionId)
-  
-  // 2. scan historical logs for this sessionId and blockHeight
-  const logs = await contract.queryFilter(filter, blockHeight)
+  const sid = sessionIdToBytes32(sessionId)
+
+  // AuditAnchored events (steps & epochs)
+  const auditFilter = contract.filters.AuditAnchored(sid)
+  const auditLogs = await contract.queryFilter(auditFilter, blockHeight)
 
   const anchorMap = {}
-  logs.forEach(log => {
-    const { hash, stepId } = log.args
-    anchorMap[Number(stepId)] = hash
+  auditLogs.forEach(log => {
+    const { packetHash, stepId } = log.args
+    anchorMap[Number(stepId)] = packetHash
   })
 
-  return anchorMap
+  // SessionStarted event
+  const startFilter = contract.filters.SessionStarted(sid)
+  const startLogs = await contract.queryFilter(startFilter, blockHeight)
+  const sessionStartMerkleRoot = startLogs.length > 0 ? startLogs[0].args.merkleRoot : null
+
+  return { anchorMap, sessionStartMerkleRoot }
 }
 
 export const getBlockHeight = async () => {
@@ -163,7 +168,7 @@ export const getBlockNumberByTxHash = async (txHash) => {
 
     return receipt.blockNumber;
   } catch (error) {
-    console.error(`获取区块高度失败 [TX: ${txHash}]:`, error.message);
+    console.error(`Fail to block number [TX: ${txHash}]:`, error.message);
     throw error;
   }
 }

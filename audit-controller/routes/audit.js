@@ -238,29 +238,35 @@ router.get('/verify/session/:id', async (req, res) => {
 
     // get all packets for this session
     const entries = await db.all()
-    const sessionPackets = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id !== undefined)
+    const sessionPackets = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id === sessionId)
 
     // sort packets by timestamp in reverse order
     sessionPackets.sort((a, b) => new Date(b.value.timestamp).getTime() - new Date(a.value.timestamp).getTime())
 
     const sessionEndAnchorHash = sessionOnChain.latestPacketHash
     const calculatedHash = calculatePacketHash(sessionPackets[0].value.packet)
-    let modelValidityState = 'untrusted'
+    let sessionEndValidity = 'untrusted'
 
     if (verifyHashMatch(calculatedHash, sessionEndAnchorHash)) {
-      modelValidityState = 'verified'
+      sessionEndValidity = 'verified'
     } else {
-      modelValidityState = 'invalid'
+      sessionEndValidity = 'invalid'
     }
 
-    const blockHeight = sessionPackets[sessionPackets.length].value.block_height
-    const chainAnchors = await getAnchorsFromChain(sessionId, blockHeight)
-    const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length), chainAnchors)
+    const blockHeight = sessionPackets[sessionPackets.length - 1].value.block_height
+    const { anchorMap, sessionStartMerkleRoot } = await getAnchorsFromChain(sessionId, blockHeight)
+    
+    const chainMerkleRoot = sessionStartMerkleRoot?.toLowerCase().replace('0x', '')
+    const sessionStartPacket = sessionPackets[sessionPackets.length - 1]
+    const packetMerkleRoot = sessionStartPacket.value.packet.payload.dataset_merkle_root?.toLowerCase().replace('0x', '')
+    const sessionStartValidity = chainMerkleRoot && packetMerkleRoot === chainMerkleRoot ? 'verified' : 'invalid'
 
-    res.status(200).json({
-      modelValidation: modelValidityState,
-      stepsValidation: validityStates
-    })
+    const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
+
+    validityStates.set('session_start', sessionStartValidity)
+    validityStates.set('session_end', sessionEndValidity)
+
+    res.status(200).json(validityStates)
   } catch (error) {
     console.error('[Audit Controller Error] Verification failed:', error)
     res.status(500).json({ error: error.message })

@@ -19,8 +19,8 @@ class HashingEngine:
             return ""
 
         if isinstance(data, dict):
-            # Ensure consistent serialization for dictionaries
-            data = json.dumps(data, sort_keys=True).encode("utf-8")
+            # Ensure consistent serialization for dictionaries           
+            data = json.dumps(data, sort_keys=True, separators=(',', ':')).encode("utf-8")
         elif isinstance(data, str):
             data = data.encode("utf-8")
 
