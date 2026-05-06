@@ -15,7 +15,8 @@ function App() {
   const [epochs, setEpochs] = useState<EpochContext[]>([]);
   const [selectionContext, setSelectionContext] = useState<SelectionContext>(null);
   const [selectedSession, setSelectedSession] = useState<SessionContext | null>(null); 
-  
+  const [lineageResult, setLineageResult] = useState<LineageVerifyResult | null>(null);
+
   // Use a ref to store the current session ID to avoid dependency cycle in loadData
   const selectedSessionIdRef = useRef<string | null>(null);
   const packetsRef = useRef<string>('');
@@ -90,7 +91,7 @@ function App() {
     loadData();
   };
 
-  const handleNodeClick = (node: StepContext | EpochContext | null) => {
+  const handleNodeClick = (node: StepNodeData | EpochContext | null) => {
     if (node === null) {
       setSelectedNode(null);
       setSelectionContext({ type: 'session', data: selectedSession! });
@@ -183,12 +184,17 @@ function App() {
             steps={steps} 
             epochs={epochs}
             selectedNode={selectedNode}
-            onNodeClick={handleNodeClick} 
+            onNodeClick={handleNodeClick}
+            lineageVerifyResult={lineageResult}
           />
         )}
       </div>
 
-      <IntegrityPanel selectionContext={selectionContext} selectedNode={selectedNode} />
+      <IntegrityPanel
+        selectionContext={selectionContext}
+        selectedNode={selectedNode}
+        onLineageVerified={setLineageResult}
+      />
     </div>
   );
 }

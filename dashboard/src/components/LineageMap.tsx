@@ -9,6 +9,7 @@ import 'reactflow/dist/style.css';
 import { type StepContext, type EpochContext } from '../services/api';
 import EpochNode from './EpochNode';
 import { Shield } from 'lucide-react';
+import { type LineageVerifyResult } from './IntegrityPanel';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
 const EPOCH_W        = 220;
@@ -16,14 +17,14 @@ const EPOCH_H        = 52;
 const STEP_W         = 100;
 const STEP_H         = 82;
 const NODES_PER_ROW  = 4;
-const STEP_GAP_X     = 28;   // horizontal gap between step nodes (same row)
-const STEP_GAP_Y     = 32;   // vertical gap between rows
-const STAGGER_X      = (STEP_W + STEP_GAP_X) / 2;  // half-step offset for stagger
-const GROUP_PAD_X    = 20;   // left/right padding inside group
-const GROUP_PAD_TOP  = 16;   // top padding inside group
-const GROUP_PAD_BOT  = 20;   // bottom padding inside group
-const TIMELINE_W     = 160;  // timeline column width
-const TIMELINE_TOP   = 40;   // canvas Y of the timeline node
+const STEP_GAP_X     = 28;
+const STEP_GAP_Y     = 32;
+const STAGGER_X      = (STEP_W + STEP_GAP_X) / 2;
+const GROUP_PAD_X    = 20;
+const GROUP_PAD_TOP  = 16;
+const GROUP_PAD_BOT  = 20;
+const TIMELINE_W     = 160;
+const TIMELINE_TOP   = 40;
 
 // ─── Arrow markers ────────────────────────────────────────────────────────────
 const ARROW_CYAN  = { type: MarkerType.ArrowClosed, width: 14, height: 14, color: '#00f2ff' };
@@ -34,57 +35,57 @@ const ARROW_DASH  = { type: MarkerType.ArrowClosed, width: 12, height: 12, color
 export interface StepNodeData {
   stepId: number;
   fullData: StepContext;
-  // Add these layout flags:
   isFirstInSeq: boolean;
   isLastInSeq: boolean;
   isRowEnd: boolean;
   isOddRow: boolean;
   posInRow: number;
+  /** True when lineage verification returned "OK" for this step */
+  isSecured: boolean;
 }
 
 const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, selected }) => {
-  const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow } = data;
+  const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow, isSecured } = data;
 
   return (
     <div className={`custom-node ${selected ? 'selected-node' : ''}`}
       style={{ width: STEP_W, cursor: 'pointer' }}>
-      {/* Target: Receive from previous step (Left if L->R, Right if R->L) */}
-      <Handle 
+      {/* Target: Receive from previous step */}
+      <Handle
         id={isOddRow ? "right" : "left"}
-        type="target" 
+        type="target"
         position={isOddRow ? Position.Right : Position.Left}
         style={{
-          visibility: (isFirstInSeq ||  posInRow == 0) ? 'hidden' : 'visible',
-          background: '#38bdf8' 
-        }} 
+          visibility: (isFirstInSeq || posInRow === 0) ? 'hidden' : 'visible',
+          background: '#38bdf8',
+        }}
       />
 
-      {/* Source: Move to next step (Left if R->L, Right if L->R) */}
+      {/* Source: Move to next step */}
       {!isRowEnd && (
-        <Handle 
+        <Handle
           id={isOddRow ? "left" : "right"}
-          type="source" 
+          type="source"
           position={isOddRow ? Position.Left : Position.Right}
-          style={{
-            background: '#38bdf8'
-          }} 
+          style={{ background: '#38bdf8' }}
         />
       )}
 
-      {/* Row Wrap: Source for snake turn (Bottom) */}
+      {/* Row Wrap: Source (Bottom) */}
       {isRowEnd && !isLastInSeq && (
         <Handle id="bottom" type="source" position={Position.Bottom}
           style={{ background: '#38bdf8' }} />
       )}
 
-      {/* Row Wrap: Target for snake turn (Top) */}
+      {/* Row Wrap: Target (Top) */}
       {!isFirstInSeq && posInRow === 0 && (
         <Handle id="top" type="target" position={Position.Top}
           style={{ background: '#38bdf8' }} />
       )}
+
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
-        {false && (
+        {isSecured && (
           <div style={{ fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
             <Shield size={9} /> SECURED
           </div>
@@ -116,37 +117,27 @@ const EpochGroupNode = ({ data }: NodeProps<EpochGroupData>) => (
 // ─── Timeline node ────────────────────────────────────────────────────────────
 interface TimelineNodeData {
   totalHeight: number;
-  // Each tick's y is RELATIVE to this node's top (already corrected for TIMELINE_TOP)
   ticks: { y: number; label: string; isActive: boolean }[];
 }
 
 const TimelineNode = ({ data }: NodeProps<TimelineNodeData>) => (
   <div style={{ width: TIMELINE_W, height: data.totalHeight, pointerEvents: 'none', position: 'relative' }}>
-    {/* Vertical bar on the right edge */}
     <div style={{
       position: 'absolute', right: 0, top: 0, bottom: 0, width: 2,
       background: 'linear-gradient(to bottom, transparent, rgba(0,242,255,0.5) 6%, rgba(0,242,255,0.5) 94%, transparent)',
     }} />
     {data.ticks.map((t, i) => (
       <div key={i} style={{
-        position: 'absolute',
-        top: t.y,
-        right: 0,
+        position: 'absolute', top: t.y, right: 0,
         display: 'flex', flexDirection: 'row-reverse', alignItems: 'center',
       }}>
-        {/* Diamond dot on the bar */}
         <div style={{
           width: 10, height: 10, flexShrink: 0,
           background: t.isActive ? '#00f2ff' : '#0d2236',
           border: `2px solid ${t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.4)'}`,
           transform: 'rotate(45deg)', marginRight: -4, zIndex: 2,
         }} />
-        {/* Horizontal tick line */}
-        <div style={{
-          width: 14, height: 2, flexShrink: 0,
-          background: t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.3)',
-        }} />
-        {/* Timestamp label */}
+        <div style={{ width: 14, height: 2, flexShrink: 0, background: t.isActive ? '#00f2ff' : 'rgba(0,242,255,0.3)' }} />
         <span style={{
           fontSize: '12px', fontFamily: 'var(--font-mono)',
           fontWeight: t.isActive ? 700 : 400,
@@ -160,30 +151,18 @@ const TimelineNode = ({ data }: NodeProps<TimelineNodeData>) => (
 
 // ─── Layout helpers ───────────────────────────────────────────────────────────
 
-/**
- * Staggered layout with vertical offset for odd columns
- * Row gap is set to one node height (STEP_H)
- */
 function staggeredPos(j: number, childCount: number, groupWidth: number) {
   const cols = Math.min(childCount, NODES_PER_ROW);
   const row = Math.floor(j / cols);
   const posInRow = j % cols;
   const isOddRow = row % 2 === 1;
-
-  // Snake flow: reverse physical column order on odd rows
   const physCol = isOddRow ? (cols - 1 - posInRow) : posInRow;
-
-  // Center the row within the group container
   const rowW = cols * STEP_W + (cols - 1) * STEP_GAP_X;
   const startX = (groupWidth - (rowW + STAGGER_X)) / 2 + GROUP_PAD_X;
-
-  // Offset logic: Shift odd columns (1, 3, 5...) down by a half-step
-  // Note: physCol is used to ensure the visual "column" stays shifted regardless of snake direction
   const columnOffset = (physCol % 2 === 1) ? (STEP_H / 2) : 0;
 
   return {
     x: startX + physCol * (STEP_W + STEP_GAP_X),
-    // Use STEP_H as the gap between rows
     y: GROUP_PAD_TOP + row * (STEP_H + STEP_GAP_Y) + columnOffset,
     row,
     isOddRow,
@@ -194,17 +173,14 @@ function staggeredPos(j: number, childCount: number, groupWidth: number) {
   };
 }
 
-/** Group container pixel size */
 function computeGroupSize(childCount: number) {
   const cols   = Math.min(childCount, NODES_PER_ROW);
   const rows   = Math.ceil(childCount / NODES_PER_ROW);
-  // Width must fit one full even row + stagger doesn't overflow (odd row is shifted)
-  const rowW   = cols * STEP_W + (cols - 1) * STEP_GAP_X + STAGGER_X; // worst-case is odd row
+  const rowW   = cols * STEP_W + (cols - 1) * STEP_GAP_X + STAGGER_X;
   const w      = GROUP_PAD_X * 2 + rowW;
-  const baseH = GROUP_PAD_TOP + (rows * STEP_H) + ((rows - 1) * STEP_GAP_Y);
+  const baseH  = GROUP_PAD_TOP + (rows * STEP_H) + ((rows - 1) * STEP_GAP_Y);
   const staggerComp = cols > 1 ? (STEP_H / 2) : 0;
   const h = baseH + staggerComp + GROUP_PAD_BOT;
-  
   return { width: Math.max(w, EPOCH_W + GROUP_PAD_X * 2), height: h };
 }
 
@@ -213,10 +189,15 @@ const fmt = (iso: string) =>
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 export interface LineageMapProps {
-  steps:        StepContext[];
-  epochs: EpochContext[];
-  selectedNode: StepNodeData | EpochContext | null;
-  onNodeClick:    (data: StepNodeData | EpochContext | null) => void;
+  steps:               StepContext[];
+  epochs:              EpochContext[];
+  selectedNode:        StepNodeData | EpochContext | null;
+  onNodeClick:         (data: StepNodeData | EpochContext | null) => void;
+  /**
+   * Latest lineage verify result from IntegrityPanel.
+   * stepsValidities drives the SECURED badge on each StepNode.
+   */
+  lineageVerifyResult?: LineageVerifyResult | null;
 }
 
 const nodeTypes = {
@@ -226,7 +207,7 @@ const nodeTypes = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 const LineageMap: React.FC<LineageMapProps> = ({
-  steps, epochs, selectedNode, onNodeClick,
+  steps, epochs, selectedNode, onNodeClick, lineageVerifyResult,
 }) => {
   const [nodes, setNodes, onNodesChange] = useNodesState([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState([]);
@@ -241,8 +222,17 @@ const LineageMap: React.FC<LineageMapProps> = ({
     });
   }, []);
 
+  // Build a quick lookup: step_id → true when lineage says "OK"
+  const securedSteps = React.useMemo<Set<number>>(() => {
+    if (!lineageVerifyResult?.stepsValidities) return new Set();
+    const s = new Set<number>();
+    Object.entries(lineageVerifyResult.stepsValidities).forEach(([stepId, status]) => {
+      if (status === 'verified') s.add(Number(stepId));
+    });
+    return s;
+  }, [lineageVerifyResult]);
+
   useEffect(() => {
-    // Group step steps by epoch
     const stepsByEpoch: Record<number, StepContext[]> = {};
     epochs.forEach((ep, i) => {
       const lo = i === 0 ? 0 : epochs[i - 1].step_id + 1;
@@ -254,11 +244,10 @@ const LineageMap: React.FC<LineageMapProps> = ({
     const rfEdges: Edge[] = [];
 
     // ══════════════════════════════════════════════════
-    // PLAIN MODE — no epoch data, simple step chain
+    // PLAIN MODE
     // ══════════════════════════════════════════════════
     if (!epochs.length) {
-      const ROW_W  = NODES_PER_ROW * STEP_W + (NODES_PER_ROW - 1) * STEP_GAP_X;
-
+      const ROW_W = NODES_PER_ROW * STEP_W + (NODES_PER_ROW - 1) * STEP_GAP_X;
       steps.forEach((p, j) => {
         const sp = staggeredPos(j, steps.length, ROW_W + GROUP_PAD_X * 2);
         rfNodes.push({
@@ -266,7 +255,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
           position: { x: sp.x, y: sp.y },
           selected: selectedNode !== null && !('epoch' in selectedNode)
             && (selectedNode as StepNodeData).stepId === p.step_id,
-          data: { stepId: p.step_id, fullData: p },
+          data: { stepId: p.step_id, fullData: p, isSecured: securedSteps.has(p.step_id) },
         });
         if (j === 0) return;
         const prev   = steps[j - 1];
@@ -282,40 +271,26 @@ const LineageMap: React.FC<LineageMapProps> = ({
     }
 
     // ══════════════════════════════════════════════════
-    // EPOCH MODE — vertical timeline + expandable groups
-    //
-    // X columns (left → right):
-    //   [timeline 0..TIMELINE_W]  [epoch node]  [expanded group]
-    //
-    // Y alignment:
-    //   epochCentreY[ep] = absolute canvas Y of epoch node centre
-    //   Timeline tick y  = epochCentreY[ep] - TIMELINE_TOP  (relative to timeline node)
-    //   Epoch node y     = epochCentreY[ep] - EPOCH_H/2
-    //   → tick diamond at relative y == epoch node centre → perfect horizontal alignment
+    // EPOCH MODE
     // ══════════════════════════════════════════════════
-
-    const EPOCH_COL_CX  = TIMELINE_W + 8 + 40 + EPOCH_W / 2;   // x-centre of epoch column
-    const GROUP_LEFT_X  = EPOCH_COL_CX + EPOCH_W / 2 + 36;      // left edge of group
+    const EPOCH_COL_CX  = TIMELINE_W + 8 + 40 + EPOCH_W / 2;
+    const GROUP_LEFT_X  = EPOCH_COL_CX + EPOCH_W / 2 + 36;
     const EPOCH_SPACING = 60;
 
-    // Pass 1: compute each epoch's canvas-Y centre
     let cursorY = TIMELINE_TOP + 20;
     const epochCentreY: Record<number, number> = {};
 
     epochs.forEach(ep => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
-      const groupSize = isExpanded ? computeGroupSize(children.length) : { height: 0 };
-      const slotH = isExpanded
-        ? Math.max(groupSize.height, EPOCH_H)
-        : EPOCH_H;
+      const groupSize  = isExpanded ? computeGroupSize(children.length) : { height: 0 };
+      const slotH      = isExpanded ? Math.max(groupSize.height, EPOCH_H) : EPOCH_H;
       epochCentreY[ep.epoch] = cursorY + slotH / 2;
       cursorY += slotH + EPOCH_SPACING;
     });
 
     const totalH = cursorY + 20;
 
-    // Pass 2: build nodes & edges
     epochs.forEach((ep, i) => {
       const isExpanded = expandedEpochs.has(ep.epoch);
       const children   = stepsByEpoch[ep.epoch] ?? [];
@@ -325,14 +300,12 @@ const LineageMap: React.FC<LineageMapProps> = ({
         ('fullData' in selectedNode && (selectedNode as StepNodeData).fullData.epoch_id && (selectedNode as StepNodeData).fullData.epoch_id === ep.epoch)
       );
 
-      // Epoch node — always present in left column, vertically centred at cy
       rfNodes.push({
         id: `epoch-${ep.epoch}`, type: 'epoch',
         position: { x: EPOCH_COL_CX - EPOCH_W / 2, y: cy - EPOCH_H / 2 },
         selected: isEpochSel,
         data: {
-          epoch: ep.epoch,
-          fullData: ep,
+          epoch: ep.epoch, fullData: ep,
           isExpanded, childCount: children.length,
           onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
           isFirstInSeq: i === 0,
@@ -340,12 +313,11 @@ const LineageMap: React.FC<LineageMapProps> = ({
         },
       });
 
-      // Epoch → Epoch edge (bottom → top, vertical)
       if (i > 0) {
         rfEdges.push({
           id: `ee-${epochs[i-1].epoch}-${ep.epoch}`,
           source: `epoch-${epochs[i-1].epoch}`, sourceHandle: 'bottom',
-          target: `epoch-${ep.epoch}`,               targetHandle: 'top',
+          target: `epoch-${ep.epoch}`,          targetHandle: 'top',
           animated: true, markerEnd: ARROW_CYAN,
           style: { stroke: '#00f2ff', strokeWidth: 2 },
           type: 'smoothstep',
@@ -354,11 +326,8 @@ const LineageMap: React.FC<LineageMapProps> = ({
 
       if (!isExpanded) return;
 
-      // ── Expanded group ────────────────────────────────────────────────
       const sortedChildren = [...children].sort((a, b) => a.step_id - b.step_id);
       const { width: gW, height: gH } = computeGroupSize(sortedChildren.length);
-
-      // Group top-aligns with epoch node top
       const groupY = cy - EPOCH_H / 2;
       const groupX = GROUP_LEFT_X;
 
@@ -370,7 +339,6 @@ const LineageMap: React.FC<LineageMapProps> = ({
         selectable: false, draggable: false,
       });
 
-      // Epoch right → first step left
       rfEdges.push({
         id: `es-${ep.epoch}-${sortedChildren[0].step_id}`,
         source: `epoch-${ep.epoch}`, sourceHandle: 'right',
@@ -379,7 +347,6 @@ const LineageMap: React.FC<LineageMapProps> = ({
         style: { stroke: '#00f2ff', strokeWidth: 1.5, strokeDasharray: '5 4' },
       });
 
-      // Step nodes with staggered positions + smart edges
       sortedChildren.forEach((p, j) => {
         const sp        = staggeredPos(j, sortedChildren.length, gW);
         const isStepSel = selectedNode !== null && !('epoch' in selectedNode)
@@ -389,27 +356,26 @@ const LineageMap: React.FC<LineageMapProps> = ({
           id: `step-${p.step_id}`, type: 'step',
           position: { x: groupX + sp.x, y: groupY + sp.y },
           selected: isStepSel,
-          data: { 
+          data: {
             stepId: p.step_id, fullData: p,
-            // Pass the layout properties from staggeredPos
             isFirstInSeq: sp.isFirstInSeq,
-            isLastInSeq: sp.isLastInSeq,
-            isRowEnd: sp.isRowEnd,
-            isOddRow: sp.isOddRow,
-            posInRow: sp.posInRow
+            isLastInSeq:  sp.isLastInSeq,
+            isRowEnd:     sp.isRowEnd,
+            isOddRow:     sp.isOddRow,
+            posInRow:     sp.posInRow,
+            // ← driven by lineageVerifyResult from IntegrityPanel
+            isSecured:    securedSteps.has(p.step_id),
           },
         });
 
         if (j === 0) return;
-
         const prev   = sortedChildren[j - 1];
         const prevSp = staggeredPos(j - 1, sortedChildren.length, gW);
         buildStepEdge(rfEdges, prev, p, prevSp, sp);
       });
     });
 
-    // Timeline node
-    // tick.y is RELATIVE to the timeline node's canvas top (TIMELINE_TOP)
+    // Timeline
     const ticks = epochs.map(ep => ({
       y: epochCentreY[ep.epoch] - TIMELINE_TOP,
       label: fmt(ep.timestamp),
@@ -427,7 +393,6 @@ const LineageMap: React.FC<LineageMapProps> = ({
       style: { width: TIMELINE_W },
     });
 
-    // Commit
     const currentKey = JSON.stringify({
       ids:      rfNodes.map(n => n.id),
       expanded: Array.from(expandedEpochs),
@@ -444,7 +409,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
     }
     setEdges([...rfEdges]);
 
-  }, [steps, epochs, expandedEpochs, selectedNode, setNodes, setEdges, onNodeClick, toggleEpoch]);
+  }, [steps, epochs, expandedEpochs, selectedNode, securedSteps, setNodes, setEdges, onNodeClick, toggleEpoch]);
 
   return (
     <div style={{ width: '100%', height: '100%' }}>
@@ -462,7 +427,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
   );
 };
 
-// ─── Edge builder (shared between plain + epoch mode) ─────────────────────────
+// ─── Edge builder ─────────────────────────────────────────────────────────────
 function buildStepEdge(
   rfEdges: Edge[],
   prev: StepContext,
@@ -473,9 +438,6 @@ function buildStepEdge(
   const id = `ss-${prev.step_id}-${cur.step_id}`;
 
   if (curSp.row === prevSp.row) {
-    // ── Same row ──────────────────────────────────────────────────────────
-    // Even rows: L→R   prev.right → cur.left
-    // Odd  rows: R→L   prev.left  → cur.right  (because physCol decreases)
     rfEdges.push({
       id,
       source: `step-${prev.step_id}`,
@@ -486,25 +448,10 @@ function buildStepEdge(
       style: { stroke: '#38bdf8', strokeWidth: 1.5 },
     });
   } else {
-    // ── Row wrap (last of row N → first of row N+1) ───────────────────────
-    // In staggered snake:
-    //   Even row ends at the RIGHT side (physCol = cols-1)
-    //     → its last node's right handle connects DOWN to the
-    //       odd row's last node (also physCol = cols-1, staggered right)
-    //       via its top handle.
-    // This gives a short near-vertical drop between the two rightmost nodes.
-    //
-    //   Odd row ends at the LEFT side (physCol = 0)
-    //     → its last node's left handle connects DOWN to the
-    //       even row's first node (physCol = 0) via its top handle.
-    //
-    // Both cases: use bottom → top with smoothstep for a gentle curve.
     rfEdges.push({
       id,
-      source: `step-${prev.step_id}`,
-      sourceHandle: 'bottom',
-      target: `step-${cur.step_id}`,
-      targetHandle: 'top',
+      source: `step-${prev.step_id}`,  sourceHandle: 'bottom',
+      target: `step-${cur.step_id}`,   targetHandle: 'top',
       animated: true, markerEnd: ARROW_BLUE,
       style: { stroke: '#38bdf8', strokeWidth: 1.5 },
       type: 'smoothstep',
@@ -512,7 +459,5 @@ function buildStepEdge(
   }
 }
 
-// Re-export type needed by App.tsx
 export type { EpochContext } from '../services/api';
-
 export default LineageMap;

@@ -39,5 +39,5 @@ export const auditAllPackets = async (packets, chainAnchors) => {
         }
     }
 
-    return results;
+    return Object.fromEntries(results);
 }

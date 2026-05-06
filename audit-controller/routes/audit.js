@@ -266,10 +266,11 @@ router.get('/verify/session/:id', async (req, res) => {
 
     const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
 
-    validityStates.set('session_start', sessionStartValidity)
-    validityStates.set('session_end', sessionEndValidity)
-
-    res.status(200).json(validityStates)
+    res.status(200).json({
+      sessionStartValidity: sessionStartValidity,
+      sessionEndValidity: sessionEndValidity,
+      stepsValidities: validityStates
+    })
   } catch (error) {
     console.error('[Audit Controller Error] Verification failed:', error)
     res.status(500).json({ error: error.message })
