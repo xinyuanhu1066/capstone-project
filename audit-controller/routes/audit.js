@@ -256,10 +256,13 @@ router.get('/verify/session/:id', async (req, res) => {
     const blockHeight = sessionPackets[sessionPackets.length - 1].value.block_height
     const { anchorMap, sessionStartMerkleRoot } = await getAnchorsFromChain(sessionId, blockHeight)
     
-    const chainMerkleRoot = sessionStartMerkleRoot?.toLowerCase().replace('0x', '')
     const sessionStartPacket = sessionPackets[sessionPackets.length - 1]
-    const packetMerkleRoot = sessionStartPacket.value.packet.payload.dataset_merkle_root?.toLowerCase().replace('0x', '')
-    const sessionStartValidity = chainMerkleRoot && packetMerkleRoot === chainMerkleRoot ? 'verified' : 'invalid'
+    
+    const calculatedStartHash = calculatePacketHash(sessionStartPacket.value.packet)
+    const storedStartHash = sessionStartPacket.value.packet_hash
+    const packetIntact = verifyHashMatch(calculatedStartHash, storedStartHash)
+    const merkleRootMatch = verifyHashMatch(sessionStartPacket.value.packet.payload.dataset_merkle_root, sessionStartMerkleRoot)
+    const sessionStartValidity = packetIntact && merkleRootMatch ? 'verified' : 'invalid'
 
     const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
 

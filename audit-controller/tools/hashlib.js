@@ -36,7 +36,7 @@ export const calculatePacketHash = (packet) => {
 
 /**
  * verify if the calculated hash matches the target hash
- * @param {string} calculatedHash - the hash calculated logically (usually with 0x prefix)
+ * @param {string} calculatedHash - the hash calculated logically (usually without 0x prefix)
  * @param {string} targetHash - the hash obtained from the blockchain or stored in previous packets (usually with 0x prefix)
  * @returns {boolean} - whether they match exactly
  */
