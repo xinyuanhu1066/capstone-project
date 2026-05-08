@@ -5,7 +5,7 @@ import LineageMap from './components/LineageMap';
 import { type StepNodeData } from './components/LineageMap';
 import IntegrityPanel from './components/IntegrityPanel';
 import { type LineageVerifyResult } from './components/IntegrityPanel';
-import { Terminal, DatabaseZap, History, Activity } from 'lucide-react';
+import { DatabaseZap, History, Activity } from 'lucide-react';
 
 function App() {
   const [sessions, setSessions] = useState<SessionContext[]>([]);
@@ -149,25 +149,83 @@ function App() {
           top: 0, 
           left: 0, 
           zIndex: 10, 
-          padding: '1.5rem',
+          padding: '0 1.5rem',
+          height: '64px',
           display: 'flex',
           alignItems: 'center',
-          background: 'rgba(10, 11, 16, 0.8)',
+          justifyContent: 'space-between',
+          background: 'rgba(10, 11, 16, 0.85)',
           width: '100%',
           borderBottom: '1px solid var(--border-color)',
-          backdropFilter: 'blur(10px)'
+          backdropFilter: 'blur(10px)',
+          boxSizing: 'border-box',
         }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
-            <Terminal color="var(--accent-cyan)" size={28} />
+          {/* Left: title */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
             <div>
-              <h1 style={{ fontSize: '1.2rem', letterSpacing: '2px', fontWeight: 900 }}>
-                AI <span style={{ color: 'var(--accent-cyan)' }}>TRAINING</span> PROVENANCE
+              <h1 style={{ fontSize: '1rem', fontWeight: 700, letterSpacing: '0.5px', color: 'var(--accent-cyan)' }}>
+                AI Training Provenance
               </h1>
-              <p style={{ fontSize: '0.7rem', color: 'var(--text-secondary)', textTransform: 'uppercase' }}>
-                Real-time Blockchain Audit Log | MNIST Prototype
+              <p style={{ fontSize: '0.65rem', color: 'var(--text-secondary)', marginTop: '1px' }}>
+                Real-time blockchain audit
               </p>
             </div>
           </div>
+
+          {/* Center: Traffic light status indicator */}
+          <div style={{
+            position: 'absolute',
+            left: '50%',
+            transform: 'translateX(-50%)',
+            display: 'flex',
+            flexDirection: 'column',
+            alignItems: 'center',
+            gap: '4px',
+          }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {/* Red dot */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%',
+                background: lineageResult && !(lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified')
+                  ? '#ef4444' : '#1e1e2e',
+                boxShadow: lineageResult && !(lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified')
+                  ? '0 0 10px #ef4444' : 'none',
+                border: '1px solid #334155',
+                transition: 'all 0.4s',
+              }} />
+              {/* Yellow dot */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%',
+                background: !lineageResult ? '#eab308' : '#1e1e2e',
+                boxShadow: !lineageResult ? '0 0 10px #eab308' : 'none',
+                border: '1px solid #334155',
+                transition: 'all 0.4s',
+              }} />
+              {/* Green dot */}
+              <div style={{
+                width: 36, height: 36, borderRadius: '50%',
+                background: lineageResult && lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified'
+                  ? '#22c55e' : '#1e1e2e',
+                boxShadow: lineageResult && lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified'
+                  ? '0 0 10px #22c55e' : 'none',
+                border: '1px solid #334155',
+                transition: 'all 0.4s',
+              }} />
+            </div>
+            <span style={{
+              fontSize: '0.6rem',
+              color: !lineageResult ? '#eab308'
+                : (lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified') ? '#22c55e' : '#ef4444',
+              textTransform: 'uppercase',
+              letterSpacing: '1px',
+            }}>
+              {!lineageResult ? 'Awaiting Verification'
+                : (lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified') ? 'Lineage Verified' : 'Integrity Error'}
+            </span>
+          </div>
+
+          {/* Right: spacer to balance layout */}
+          <div style={{ width: '180px' }} />
         </header>
 
         {loading ? (

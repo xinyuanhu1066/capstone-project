@@ -144,7 +144,6 @@ const SessionPanel: React.FC<{
   session:              SessionContext;
   cachedDataset:        DatasetVerifyResult  | null;
   cachedModel:          ModelVerifyResult    | null;
-  cachedLineage:        LineageVerifyResult  | null;
   onDatasetVerified:    (r: DatasetVerifyResult)  => void;
   onModelVerified:      (r: ModelVerifyResult)    => void;
   onLineageVerifiedCb:  (r: LineageVerifyResult)  => void;
@@ -152,7 +151,6 @@ const SessionPanel: React.FC<{
   session,
   cachedDataset,
   cachedModel,
-  cachedLineage,
   onDatasetVerified,
   onModelVerified,
   onLineageVerifiedCb,
@@ -187,7 +185,6 @@ const SessionPanel: React.FC<{
         }}
       >
         <span>Session Overview</span>
-        {cachedLineage && <VerifyBadge is_valid={cachedLineage.sessionStartValidity === 'verified' && cachedLineage.sessionEndValidity === 'verified'} />}
       </h2>
 
       <Card title="" icon={null}>
@@ -464,7 +461,6 @@ const IntegrityPanel: React.FC<IntegrityPanelProps> = ({
             session={resolved.data}
             cachedDataset={cache.dataset}
             cachedModel={cache.model}
-            cachedLineage={cache.lineage}
             onDatasetVerified={r => { getSessionCache(sid).dataset = r; bump(); }}
             onModelVerified={r   => { getSessionCache(sid).model   = r; bump(); }}
             onLineageVerifiedCb={r => {
