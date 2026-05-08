@@ -382,7 +382,7 @@ class TrainingWatcher:
                 res_data = response.json()
                 print(
                     f"[Audit Log] {level} {payload['packet']['payload'].get('step_id','')} | "
-                    f"Hash: {payload['packet_hash'][:10]}... | CID: {res_data.get('cid', 'N/A')[:10]}..."
+                    f"Hash: {payload['packet_hash'][:10]}... | Transation: {res_data.get('tx_hash', 'N/A')[:10]}..."
                 )
             sys.stdout.flush()
         except Exception as e:

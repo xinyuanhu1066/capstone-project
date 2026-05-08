@@ -191,4 +191,6 @@ dashboard/node_modules/
 dashboard/dist/
 skill-development/
 *.skill
-
+orbitdb-address.txt
+orphan-txs.log
+orphan-txs.recovered.log

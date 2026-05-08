@@ -12,6 +12,7 @@ import fs from 'fs'
 import path from 'path'
 import { ComposedStorage, IPFSBlockStorage, LRUStorage } from '@orbitdb/core/src/storage/index.js'
 import LevelStorage from '@orbitdb/core/src/storage/level.js'
+import { recoverOrphanTxs } from '../tools/recover.js'
 
 let orbitdb = null
 let helia = null
@@ -114,6 +115,7 @@ export const initOrbitDB = async () => {
   
   const entries = await db.all()
   console.log(`[OrbitDB] Online. Address: ${db.address} | Entries: ${entries.length}`)
+  await recoverOrphanTxs(db)
   return { orbitdb, db }
 }
 
