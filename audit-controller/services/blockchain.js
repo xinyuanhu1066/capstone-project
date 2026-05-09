@@ -2,6 +2,10 @@ import { ethers } from 'ethers'
 import * as dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
+import { trace, SpanStatusCode } from '@opentelemetry/api'
+import { getLogger } from '../tools/instrumentation.js'
+
+const tracer = trace.getTracer('blockchain')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -36,18 +40,25 @@ const sendWithLock = (fn) => {
 
 const sendTx = async (fn) => {
   return sendWithLock(async () => {
-    if (currentNonce === null) {
-      currentNonce = await provider.getTransactionCount(wallet.address, 'latest')
-    }
-    const nonce = currentNonce
-    try {
-      const result = await fn(nonce)
-      currentNonce++
-      return result
-    } catch (err) {
-      currentNonce = null
-      throw err
-    }
+    return tracer.startActiveSpan('blockchain.sendTx', async (span) => {
+      try {
+        if (currentNonce === null) {
+          currentNonce = await provider.getTransactionCount(wallet.address, 'latest')
+        }
+        const nonce = currentNonce
+        const result = await fn(nonce)
+        currentNonce++
+        span.setStatus({ code: SpanStatusCode.OK })
+        return result
+      } catch (err) {
+        currentNonce = null
+        span.recordException(err)
+        span.setStatus({ code: SpanStatusCode.ERROR })
+        throw err
+      } finally {
+        span.end()
+      }
+    })
   })
 }
 
@@ -78,77 +89,124 @@ export const initBlockchain = async () => {
 }
 
 export const startSession = async (sessionId, merkleRootHex) => {
-  if (!contract) throw new Error('Blockchain service not initialized')
-  const sid = sessionIdToBytes32(sessionId)
-  const mr = toBytes32Hex(merkleRootHex)
-  return sendTx(async (nonce) => {
-    const tx = await contract.startSession(sid, mr, { nonce })
-    const receipt = await tx.wait()
-    return receipt.hash
+  return tracer.startActiveSpan('blockchain.startSession', async (span) => {
+    span.setAttributes({ 'session.id': sessionId, 'session.action': 'start' })
+    try {
+      const sid = sessionIdToBytes32(sessionId)
+      const mr = toBytes32Hex(merkleRootHex)
+      return await sendTx(async (nonce) => {
+        const tx = await contract.startSession(sid, mr, { nonce })
+        const receipt = await tx.wait()
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        return receipt.hash
+      })
+    } catch (err) {
+      span.recordException(err)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      throw err
+    } finally {
+      span.end()
+    }
   })
 }
 
 export const syncProgress = async (sessionId, lastPacketHashHex, stepId) => {
-  if (!contract) throw new Error('Blockchain service not initialized')
-  const sid = sessionIdToBytes32(sessionId)
-  const lh = toBytes32Hex(lastPacketHashHex)
-  return sendTx(async (nonce) => {
-    const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
-    const receipt = await tx.wait()
-    return receipt.hash
+  return tracer.startActiveSpan('blockchain.syncProgress', async (span) => {
+    span.setAttributes({ 'session.id': sessionId, 'step.id': stepId })
+    try {
+      const sid = sessionIdToBytes32(sessionId)
+      const lh = toBytes32Hex(lastPacketHashHex)
+      return await sendTx(async (nonce) => {
+        const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
+        const receipt = await tx.wait()
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        return receipt.hash
+      })
+    } catch (err) {
+      span.recordException(err)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      throw err
+    } finally {
+      span.end()
+    }
   })
 }
 
 export const completeSession = async (sessionId, finalPacketHashHex) => {
-  if (!contract) throw new Error('Blockchain service not initialized')
-  const sid = sessionIdToBytes32(sessionId)
-  const fh = toBytes32Hex(finalPacketHashHex)
-  return sendTx(async (nonce) => {
-    const tx = await contract.completeSession(sid, fh, { nonce })
-    const receipt = await tx.wait()
-    return receipt.hash
-  }) 
+  return tracer.startActiveSpan('blockchain.completeSession', async (span) => {
+    span.setAttributes({ 'session.id': sessionId, 'session.action': 'end' })
+    try {
+      const sid = sessionIdToBytes32(sessionId)
+      const fh = toBytes32Hex(finalPacketHashHex)
+      return sendTx(async (nonce) => {
+        const tx = await contract.completeSession(sid, fh, { nonce })
+        const receipt = await tx.wait()
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        return receipt.hash
+      })
+    } catch (err) {
+      span.recordException(err)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      throw err
+    } finally {
+      span.end()
+    }
+  })
 }
 
 export const getSession = async (sessionId) => {
-  if (!contract) throw new Error('Blockchain service not initialized')
-  const sid = sessionIdToBytes32(sessionId)
-  const s = await contract.getSession(sid)
-  // s may be an array-like result
-  return {
-    datasetMerkleRoot: s.datasetMerkleRoot ?? s[0],
-    latestPacketHash: s.latestPacketHash ?? s[1],
-    isActive: s.isActive ?? s[2],
-    isCompleted: s.isCompleted ?? s[3]
-  }
+  return tracer.startActiveSpan('blockchain.getSession', async (span) => {const sid = sessionIdToBytes32(sessionId)
+    try {
+      const s = await contract.getSession(sid)
+      // s may be an array-like result
+      return {
+        datasetMerkleRoot: s.datasetMerkleRoot ?? s[0],
+        latestPacketHash: s.latestPacketHash ?? s[1],
+        isActive: s.isActive ?? s[2],
+        isCompleted: s.isCompleted ?? s[3]
+      }
+    } finally {
+      span.end()
+    }
+  })
 }
 
 export const getAnchorsFromChain = async (sessionId, blockHeight) => {
-  if (!contract) throw new Error('Blockchain service not initialized')
+  return tracer.startActiveSpan('blockchain.getAnchorsFromChain', async (span) => {
+    try {
+      const sid = sessionIdToBytes32(sessionId)
 
-  const sid = sessionIdToBytes32(sessionId)
+      // AuditAnchored events (steps & epochs)
+      const auditFilter = contract.filters.AuditAnchored(sid)
+      const auditLogs = await contract.queryFilter(auditFilter, blockHeight)
 
-  // AuditAnchored events (steps & epochs)
-  const auditFilter = contract.filters.AuditAnchored(sid)
-  const auditLogs = await contract.queryFilter(auditFilter, blockHeight)
+      const anchorMap = {}
+      auditLogs.forEach(log => {
+        const { packetHash, stepId } = log.args
+        anchorMap[Number(stepId)] = packetHash
+      })
 
-  const anchorMap = {}
-  auditLogs.forEach(log => {
-    const { packetHash, stepId } = log.args
-    anchorMap[Number(stepId)] = packetHash
+      // SessionStarted event
+      const startFilter = contract.filters.SessionStarted(sid)
+      const startLogs = await contract.queryFilter(startFilter, blockHeight)
+      const sessionStartMerkleRoot = startLogs.length > 0 ? startLogs[0].args.merkleRoot : null
+
+      return { anchorMap, sessionStartMerkleRoot }
+    } finally {
+      span.end()
+    }
   })
-
-  // SessionStarted event
-  const startFilter = contract.filters.SessionStarted(sid)
-  const startLogs = await contract.queryFilter(startFilter, blockHeight)
-  const sessionStartMerkleRoot = startLogs.length > 0 ? startLogs[0].args.merkleRoot : null
-
-  return { anchorMap, sessionStartMerkleRoot }
 }
 
 export const getBlockHeight = async () => {
-  const currentBlockHeight = await provider.getBlockNumber()
-  return currentBlockHeight
+  return tracer.startActiveSpan('blockchain.getBlockHeight', async (span) => {
+    try {
+      const currentBlockHeight = await provider.getBlockNumber()
+      return currentBlockHeight
+    } finally {
+      span.end()
+    }
+  })
 }
 
 /**
@@ -157,18 +215,24 @@ export const getBlockHeight = async () => {
  * @returns {Promise<number>} - Block number
  */
 export const getBlockNumberByTxHash = async (txHash) => {
-  if (!provider) throw new Error('Blockchain service not initialized')
+  return tracer.startActiveSpan('blockchain.getBlockNumberByTxHash', async (span) => {
+    try {
+      const receipt = await provider.getTransactionReceipt(txHash);
 
-  try {
-    const receipt = await provider.getTransactionReceipt(txHash);
+      if (!receipt) {
+        const err = new Error('Transaction receipt not found. The tx might be pending.')
+        span.recordException(err)
+        span.setStatus({ code: SpanStatusCode.ERROR })
+        throw err
+      }
 
-    if (!receipt) {
-      throw new Error('Transaction receipt not found. The tx might be pending.');
+      return receipt.blockNumber;
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      throw error;
+    } finally {
+      span.end()
     }
-
-    return receipt.blockNumber;
-  } catch (error) {
-    console.error(`Fail to block number [TX: ${txHash}]:`, error.message);
-    throw error;
-  }
+  })
 }

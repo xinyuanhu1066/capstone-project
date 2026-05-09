@@ -12,6 +12,17 @@ import io
 import zstandard as zstd
 from typing import Any, Dict, Optional, List, Tuple
 from audit_sdk.hashing_engine.engine import HashingEngine
+from opentelemetry import trace, metrics
+from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.metrics import MeterProvider
+from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace.export import BatchSpanProcessor
+import logging
+
+
+logger = logging.getLogger("audit_sdk.watcher")
 
 # Configuration
 CONTROLLER_URL = os.getenv("AUDIT_CONTROLLER_URL", "http://localhost:3000")
@@ -36,12 +47,39 @@ class TrainingWatcher:
         if hasattr(self, '_initialized') and self._initialized:
             return
         
+        provider = TracerProvider()
+        provider.add_span_processor(
+            BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
+        )
+        trace.set_tracer_provider(provider)
+        self.tracer = trace.get_tracer("watcher")
+
+
+        metric_reader = PeriodicExportingMetricReader(
+            OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics"),
+            export_interval_millis=5000
+        )
+        meter_provider = MeterProvider(metric_readers=[metric_reader])
+        metrics.set_meter_provider(meter_provider)
+        meter = metrics.get_meter("watcher")
+
+        self.loss_gauge = meter.create_gauge("training.loss")
+        self.step_counter = meter.create_counter("training.steps")
+        self.queue_size_gauge = meter.create_gauge("watcher.packet_queue_size")
+        self.blob_upload_histogram = meter.create_histogram(
+            "watcher.blob_upload_duration_ms",
+            description="IPFS blob upload latency"
+        )
+        self.dispatch_histogram = meter.create_histogram(
+            "watcher.dispatch_duration_ms", 
+            description="Packet dispatch to controller latency"
+        )
+        
         self.dataset_dir = dataset_dir or os.path.join(os.getcwd(), 'data')
         self.dataset_name = dataset_name
         self.step_interval = step_interval
         self.hashing_engine = HashingEngine()
         self.buffer = queue.Queue()
-        self.blob_buffer = queue.Queue()
         self.is_running = True
         self.global_step = 0
         self.current_loss = 0.0
@@ -71,13 +109,13 @@ class TrainingWatcher:
         # Start background processing threads
         self.processor_thread = threading.Thread(target=self._process_buffer, daemon=True)
         self.processor_thread.start()
-
-        self.blob_processor_thread = threading.Thread(target=self._process_blob_buffer, daemon=True)
-        self.blob_processor_thread.start()
         
         self._apply_global_patches()
-        print(f"[Watcher] Started session: {self.session_id} | Dataset: {self.dataset_name} ({self.dataset_version})")
-        sys.stdout.flush()
+        logger.info("watcher.session_started", extra={
+            "session_id": self.session_id,
+            "dataset_name": self.dataset_name,
+            "dataset_version": self.dataset_version
+        })
 
     def _resolve_dataset_version(self) -> str:
         """Resolve semantic version from OrbitDB via Audit Controller (Identifier Refactor 1.B)."""
@@ -90,7 +128,12 @@ class TrainingWatcher:
             if response.status_code == 200:
                 return response.json().get("version", "v1.0")
         except Exception as e:
-            print(f"[Watcher Error] Version resolution failed: {e}")
+            logger.error("watcher.dataset_version_resolve_failed", extra={
+                "session_id": self.session_id,
+                "error": str(e),
+                "dataset_name": self.dataset_name,
+                "merkle_root": self.dataset_merkle_root,
+            })
         return "v1.0"
 
     def _should_exclude(self, filename: str) -> bool:
@@ -101,49 +144,69 @@ class TrainingWatcher:
 
     def _snapshot_dataset(self) -> str:
         """Upload dataset to IPFS to get a Root CID (Plan Section 2.A)."""
-        if not os.path.exists(self.dataset_dir):
-            return "no-dataset-found"
-        
-        print(f"[Watcher] Taking IPFS snapshot of dataset: {self.dataset_dir}...")
-        
-        files_to_upload = []
-        for root, _, files in os.walk(self.dataset_dir):
-            for file in files:
-                if self._should_exclude(file):
-                    continue
-                full_path = os.path.join(root, file)
-                rel_path = os.path.relpath(full_path, self.dataset_dir)
-                with open(full_path, 'rb') as f:
-                    content = f.read()
-                    file_cid = self._upload_blob(content)
-                    if file_cid:
-                        files_to_upload.append({
-                            "path": rel_path,
-                            "cid": file_cid
-                        })
-        try:
-            payload = {
-                "dataset_name": self.dataset_name,
-                "files": files_to_upload
-            }
-            response = requests.post(f"{CONTROLLER_URL}/audit/dataset/directory", json=payload, timeout=30)
-            if response.status_code == 201:
-                return response.json().get("root_cid", "snapshot-failed")
-        except Exception as e:
-            print(f"[Watcher Error] Directory snapshot failed: {e}")
+        with self.tracer.start_as_current_span("watcher.snapshot_dataset") as span:
+            span.set_attributes({
+                "dataset.name": self.dataset_name,
+                "dataset.dir": self.dataset_dir
+            })
+            if not os.path.exists(self.dataset_dir):
+                return "no-dataset-found"
             
-        return "snapshot-failed"
+            print(f"[Watcher] Taking IPFS snapshot of dataset: {self.dataset_dir}...")
+            sys.stdout.flush()
+            
+            files_to_upload = []
+            for root, _, files in os.walk(self.dataset_dir):
+                for file in files:
+                    if self._should_exclude(file):
+                        continue
+                    full_path = os.path.join(root, file)
+                    rel_path = os.path.relpath(full_path, self.dataset_dir)
+                    with open(full_path, 'rb') as f:
+                        content = f.read()
+                        file_cid = self._upload_blob(content)
+                        if file_cid:
+                            files_to_upload.append({
+                                "path": rel_path,
+                                "cid": file_cid
+                            })
+            try:
+                payload = {
+                    "dataset_name": self.dataset_name,
+                    "files": files_to_upload
+                }
+                response = requests.post(f"{CONTROLLER_URL}/audit/dataset/directory", json=payload, timeout=30)
+                if response.status_code == 201:
+                    root_cid = response.json().get("root_cid", "snapshot-failed")
+                    span.set_attribute("dataset.file_count", len(files_to_upload))
+                    span.set_attribute("dataset.root_cid", root_cid)
+                    return root_cid
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(trace.StatusCode.ERROR)
+                logger.error("watcher.snapshot_dataset_failed", extra={
+                    "session_id": self.session_id,
+                    "dataset_name": self.dataset_name
+                })
+                
+            return "snapshot-failed"
 
     def _calculate_initial_merkle_root(self) -> str:
-        if not os.path.exists(self.dataset_dir):
-            return ""
-        file_paths = []
-        for root, _, files in os.walk(self.dataset_dir):
-            for file in files:
-                if self._should_exclude(file):
-                    continue
-                file_paths.append(os.path.join(root, file))
-        return self.hashing_engine.calculate_merkle_root(file_paths, base_dir=self.dataset_dir)
+        with self.tracer.start_as_current_span("watcher.calculate_merkle_root") as span:
+            if not os.path.exists(self.dataset_dir):
+                return ""
+            file_paths = []
+            for root, _, files in os.walk(self.dataset_dir):
+                for file in files:
+                    if self._should_exclude(file):
+                        continue
+                    file_paths.append(os.path.join(root, file))
+            result = self.hashing_engine.calculate_merkle_root(file_paths, base_dir=self.dataset_dir)
+            span.set_attributes({
+                "dataset.file_count": len(file_paths),
+                "dataset.merkle_root": result[:16]
+            })
+            return result
 
     def _apply_global_patches(self):
         # 1. Patch Tensor.backward to capture loss values automatically
@@ -208,66 +271,123 @@ class TrainingWatcher:
         sys.stdout.flush()
 
     def _on_dataloader_exhausted(self, loader_id: int):
-        if loader_id != self._train_loader_id:
-            return
+        with self.tracer.start_as_current_span("watcher.epoch_checkpoint") as span:
+            span.set_attributes({
+                "epoch.id": self.current_epoch + 1,
+                "session.id": self.session_id
+            })
+            if loader_id != self._train_loader_id:
+                return
 
-        self.current_epoch += 1
-        epoch = self.current_epoch
+            self.current_epoch += 1
+            epoch = self.current_epoch
 
-        # Perform Full Checkpoint Persistence (As per plan Section 2.C)
-        checkpoint_data = self._capture_full_checkpoint()
-        checkpoint_hash = self.hashing_engine.calculate_sha256(checkpoint_data)
+            # Perform Full Checkpoint Persistence (As per plan Section 2.C)
+            checkpoint_data = self._capture_full_checkpoint()
+            checkpoint_hash = self.hashing_engine.calculate_sha256(checkpoint_data)
 
-        self.buffer.put({
-            "type": "epoch",
-            "epoch_id": epoch,
-            "step_id": self.global_step,
-            "checkpoint_hash": checkpoint_hash,
-            "checkpoint": checkpoint_data
-        })
-
-        print(f"[Watcher] Epoch {epoch} boundary reached. Global Step: {self.global_step}")
-        sys.stdout.flush()
+            self.buffer.put({
+                "type": "epoch",
+                "epoch_id": epoch,
+                "step_id": self.global_step,
+                "checkpoint_hash": checkpoint_hash,
+                "checkpoint": checkpoint_data
+            })
+            span.set_attribute("checkpoint.size_bytes", len(checkpoint_data))
+            logger.info("watcher.epoch_boundary_reached", extra={
+                "session_id": self.session_id,
+                "step": self.global_step,
+                "epoch": epoch
+            })
 
     def _capture_full_checkpoint(self) -> Optional[bytes]:
         """Save full model weights to a binary buffer and compress with Zstd."""
         if self._last_optimizer is None:
             return None
         
-        buffer = io.BytesIO()
-        try:
-            state = {
-                'step': self.global_step,
-                'param_groups': self._last_optimizer.param_groups,
-                'state': self._last_optimizer.state
-            }
-            torch.save(state, buffer)
-            raw_data = buffer.getvalue()
-            
-            # Zstd Compression (Plan Section 4, Task 3)
-            cctx = zstd.ZstdCompressor(level=3)
-            compressed_data = cctx.compress(raw_data)
-            
-            print(f"[Watcher] Checkpoint compressed: {len(raw_data)} -> {len(compressed_data)} bytes")
-            return compressed_data
-        except Exception as e:
-            print(f"[Watcher Error] Full checkpoint capture/compression failed: {e}")
-            return None
+        with self.tracer.start_as_current_span("watcher.capture_full_checkpoint") as span:
+            span.set_attributes({
+                "session.id": self.session_id,
+                "epoch.id": self.current_epoch,
+                "training.step": self.global_step
+            })
+
+            with self.tracer.start_as_current_span("watcher.checkpoint_serialize") as serialize_span:
+                try:
+                    current_lrs = [
+                        pg['lr'] for pg in self._last_optimizer.param_groups
+                    ]
+                    serialize_span.set_attributes({
+                        "optimizer.type": type(self._last_optimizer).__name__,
+                        "optimizer.current_lr": str(current_lrs),
+                    })
+                    state = {
+                        'step': self.global_step,
+                        'optimizer': {
+                            'param_groups': [
+                                {k: v for k, v in pg.items() if k != 'params'}
+                                for pg in self._last_optimizer.param_groups
+                            ],
+                            'state': self._last_optimizer.state
+                        }
+                    }
+                    buffer = io.BytesIO()
+                    torch.save(state, buffer)
+                    raw_data = buffer.getvalue()
+                    serialize_span.set_attribute("checkpoint.raw_size_bytes", len(raw_data))
+                except Exception as e:
+                    serialize_span.record_exception(e)
+                    serialize_span.set_status(trace.StatusCode.ERROR)
+                    logger.error("watcher.checkpoint_serialize_failed", extra={
+                        "session_id": self.session_id,
+                        "error": str(e)
+                    })
+                    return None
+            with self.tracer.start_as_current_span("watcher.checkpoint_compress") as compress_span:
+                try:
+                    cctx = zstd.ZstdCompressor(level=3)
+                    compressed_data = cctx.compress(raw_data)
+                    compress_span.set_attributes({
+                        "checkpoint.raw_size_bytes": len(raw_data),
+                        "checkpoint.compressed_size_bytes": len(compressed_data),
+                        "checkpoint.compression_ratio": round(len(raw_data) / len(compressed_data), 2)
+                    })
+                    return compressed_data
+                except Exception as e:
+                    compress_span.record_exception(e)
+                    compress_span.set_status(trace.StatusCode.ERROR)
+                    logger.error("watcher.checkpoint_compress_failed", extra={
+                        "session_id": self.session_id,
+                        "error": str(e)
+                    })
+                    return None
 
     def _capture_snapshot(self, optimizer):
         """Standard step snapshot: Binary hash + metrics."""        
         # Multi-step metrics for anomaly detection (Plan 3.B)
-        metrics = {
-            "loss": self.current_loss,
-            "step_metrics": self.step_metrics.copy()
-        }
-        self.step_metrics = [] # Reset for next interval
 
-        self.buffer.put({
-            "type": "step",
-            "step_id": self.global_step,
-            "metrics": metrics,
-        })
+        with self.tracer.start_as_current_span("watcher.capture_snapshot") as span:
+            attrs = {"session_id": self.session_id}
+            span.set_attributes({
+                "training.step": self.global_step,
+                "training.loss": self.current_loss,
+                "session.id": self.session_id
+            })
+            self.loss_gauge.set(self.current_loss, attrs)
+            self.step_counter.add(1, attrs)
+            self.queue_size_gauge.set(self.buffer.qsize(), attrs)
+
+            metrics_data = {
+                "loss": self.current_loss,
+                "step_metrics": self.step_metrics.copy()
+            }
+            self.step_metrics = [] # Reset for next interval
+
+            self.buffer.put({
+                "type": "step",
+                "step_id": self.global_step,
+                "metrics": metrics_data,
+            })
 
     def configure(self, hyperparams: Dict[str, Any]):
         self.hyperparams.update(hyperparams)
@@ -336,30 +456,33 @@ class TrainingWatcher:
             except queue.Empty:
                 continue
 
-    def _process_blob_buffer(self):
-        """Asynchronous blob upload processor."""
-        while self.is_running:
-            try:
-                data = self.blob_buffer.get(timeout=1.0)
-                self._upload_blob(data)
-                self.blob_buffer.task_done()
-            except queue.Empty:
-                continue
-
     def _upload_blob(self, blob: bytes) -> Optional[str]:
         """Upload binary data to the Audit Controller and return the CID."""
-        try:
-            response = requests.post(
-                BLOB_API_URL, 
-                data=blob, 
-                headers={'Content-Type': 'application/octet-stream'},
-                timeout=60
-            )
-            if response.status_code == 201:
-                return response.json().get("cid")
-        except Exception as e:
-            print(f"[Watcher Error] Blob upload failed: {e}")
-        return None
+        with self.tracer.start_as_current_span("watcher.upload_blob") as span:
+            span.set_attribute("blob.size_bytes", len(blob))
+            start = time.time()
+            try:
+                response = requests.post(
+                    BLOB_API_URL, 
+                    data=blob, 
+                    headers={'Content-Type': 'application/octet-stream'},
+                    timeout=60
+                )
+                elapsed = (time.time() - start) * 1000
+                self.blob_upload_histogram.record(elapsed, {"session_id": self.session_id})
+                if response.status_code == 201:
+                    cid = response.json().get("cid")
+                    span.set_attribute("blob.cid", cid)
+                    return cid
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(trace.StatusCode.ERROR)
+                logger.error("watcher.blob_upload_failed", extra={
+                    "session_id": self.session_id,
+                    "blob_size": len(blob)
+                })
+
+            return None
 
     def _get_latest_packet_hash(self, session_id: str) -> str:
         """Query Audit Controller for the on-chain/latest packet hash for a session."""
@@ -376,17 +499,33 @@ class TrainingWatcher:
         return ""
 
     def _dispatch(self, payload: Dict[str, Any], url: str, level: str = ""):
-        try:
-            response = requests.post(url, json=payload, timeout=5)
-            if response.status_code == 201:
-                res_data = response.json()
-                print(
-                    f"[Audit Log] {level} {payload['packet']['payload'].get('step_id','')} | "
-                    f"Hash: {payload['packet_hash'][:10]}... | Transation: {res_data.get('tx_hash', 'N/A')[:10]}..."
-                )
-            sys.stdout.flush()
-        except Exception as e:
-            print(f"[Watcher Error] dispatch to {url}: {e}")
+        with self.tracer.start_as_current_span("watcher.dispatch") as span:
+            span.set_attributes({
+                "packet.type": payload["packet"]["type"],
+                "packet.hash": payload["packet_hash"][:16],
+                "session.id": self.session_id
+            })
+            start = time.time()
+            try:
+                response = requests.post(url, json=payload, timeout=5)
+                elapsed = (time.time() - start) * 1000
+                self.dispatch_histogram.record(elapsed, {"packet_type": payload["packet"]["type"]})
+                if response.status_code == 201:
+                    res_data = response.json()
+                    print(
+                        f"[Audit Log] {level} {payload['packet']['payload'].get('step_id','')} | "
+                        f"Hash: {payload['packet_hash'][:10]}... | Transation: {res_data.get('tx_hash', 'N/A')[:10]}..."
+                    )
+                sys.stdout.flush()
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(trace.StatusCode.ERROR)
+                logger.error("watcher.packet_upload_failed", extra={
+                    "session_id": self.session_id,
+                    "packet_type": payload["packet"]["type"],
+                    "packet_hash": payload["packet_hash"][:16],
+                })
+
 
     def _create_audit_packet(
             self, session_id: str, packet_type: str,
@@ -404,38 +543,53 @@ class TrainingWatcher:
     
     def stop(self, final_model_path: Optional[str] = None):
         """Risk Mitigation: Mandatory final capture (Plan 3.A)"""
-        print("[Watcher] Training end detected. Capturing final state...")
+        logger.info("watcher.session_ended", extra={
+            "session_id": self.session_id,
+        })
 
-        if self.global_step % self.step_interval != 0 and self._last_optimizer:
-            self._capture_snapshot(self._last_optimizer)
-        
-        if final_model_path and os.path.exists(final_model_path):
-            with open(final_model_path, 'rb') as f:
-                model_bytes = f.read()
+        with self.tracer.start_as_current_span("watcher.stop") as span:
+            span.set_attribute("session.id", self.session_id)
+            if self.global_step % self.step_interval != 0 and self._last_optimizer:
+                self._capture_snapshot(self._last_optimizer)
             
-            print(f"[Watcher] Uploading final model {final_model_path} to IPFS...")
+            if final_model_path and os.path.exists(final_model_path):
+                model_size = os.path.getsize(final_model_path)
+                span.set_attribute("model.path", final_model_path)
+                span.set_attribute("model.size_bytes", model_size)
 
-            model_cid = self._upload_blob(model_bytes)
-            model_hash = self.hashing_engine.calculate_sha256(model_bytes)
+                with self.tracer.start_as_current_span("watcher.upload_final_model") as upload_span:
+                    with open(final_model_path, 'rb') as f:
+                        model_bytes = f.read()
+                    
+                    print(f"[Watcher] Uploading final model {final_model_path} to IPFS...")
+                    sys.stdout.flush()
 
-            self.buffer.put({
-                "type": "session",
-                "action": "end",
-                "model_cid": model_cid,
-                "model_hash": model_hash
-            })
+                    model_cid = self._upload_blob(model_bytes)
+                    model_hash = self.hashing_engine.calculate_sha256(model_bytes)
+                    upload_span.set_attributes({
+                        "model.cid": model_cid or "failed",
+                        "model.hash": model_hash[:16]
+                    })
 
-        try:
-            self.buffer.join()
-        except Exception:
-            pass
-        
-        self.is_running = False
-        for thread_name in ['processor_thread', 'blob_processor_thread']:
-            if hasattr(self, thread_name):
-                t = getattr(self, thread_name)
-                if t.is_alive():
-                    t.join(timeout=2.0)
+                self.buffer.put({
+                    "type": "session",
+                    "action": "end",
+                    "model_cid": model_cid,
+                    "model_hash": model_hash
+                })
+
+            with self.tracer.start_as_current_span("watcher.flush_buffer") as flush_span:
+                flush_start = time.time()
+                try:
+                    self.buffer.join()
+                except Exception:
+                    pass
+                flush_span.set_attribute("flush.duration_ms", (time.time() - flush_start) * 1000)
+            
+            self.is_running = False
+            if self.processor_thread.is_alive():
+                self.processor_thread.join(timeout=2.0)
+
 
 class _SentinelIter:
     __slots__ = ('_inner', '_loader_id', '_watcher', '_exhausted')
@@ -472,5 +626,13 @@ def init(
     )
     if hyperparams:
         watcher.configure(hyperparams)
-    watcher.buffer.put({"type": "session", "action": "start"})
+    with watcher.tracer.start_as_current_span("watcher.session_start") as span:
+        span.set_attributes({
+            "session.id": watcher.session_id,
+            "dataset.name": watcher.dataset_name,
+            "dataset.version": watcher.dataset_version,
+            "hyperparams.lr": str(hyperparams.get("lr", "")),
+            "hyperparams.batch_size": str(hyperparams.get("batch_size", ""))
+        })
+        watcher.buffer.put({"type": "session", "action": "start"})
     return watcher

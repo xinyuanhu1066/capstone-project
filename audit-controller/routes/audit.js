@@ -15,28 +15,39 @@ import { sha256 } from 'multiformats/hashes/sha2'
 import { UnixFS } from 'ipfs-unixfs'
 import * as dagPB from '@ipld/dag-pb'
 import { deriveEntryId } from '../tools/strings.js'
+import { getLogger } from '../tools/instrumentation.js'
+import { trace, SpanStatusCode } from '@opentelemetry/api'
 
 const router = express.Router()
 
 // POST /audit/blob - Receive and store large binary data in IPFS
 router.post('/blob', express.raw({ type: 'application/octet-stream', limit: '100mb' }), async (req, res) => {
-  try {
-    const helia = getHelia()
-    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-
-    const heliaFs = unixfs(helia)
-    const cid = await heliaFs.addBytes(req.body)
-    
-    console.log(`[Audit Controller] Blob stored | CID: ${cid.toString()}`)
-    res.status(201).json({ status: 'success', cid: cid.toString() })
-  } catch (error) {
-    console.error('[Audit Controller Error] Failed to store blob:', error)
-    res.status(500).json({ error: error.message })
-  }
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.blob.store', async (span) => {
+    const log = getLogger()
+    span.setAttributes({ 'blob.size_bytes': req.body.length })
+    try {
+      const helia = getHelia()
+      if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+      const heliaFs = unixfs(helia)
+      const cid = await heliaFs.addBytes(req.body)
+      span.setAttributes({ 'blob.cid': cid.toString() })
+      log.info({ event: 'blob.stored', cid: cid.toString(), size_bytes: req.body.length })
+      res.status(201).json({ status: 'success', cid: cid.toString() })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'blob.store_failed', size_bytes: req.body.length })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
+    }
+  })
 })
 
 // POST /audit/dataset/version - Resolve semantic version of a dataset
 router.post('/dataset/version', async (req, res) => {
+  const log = getLogger()
   try {
     const { dataset_name, merkle_root } = req.body
     const db = getDB()
@@ -48,10 +59,11 @@ router.post('/dataset/version', async (req, res) => {
       .sort((a, b) => b.value.timestamp - a.value.timestamp)
 
     const latest = datasetEntries[0]
+    let resolvedVersion
 
     if (latest) {
       if (latest.value.merkle_root === merkle_root) {
-        return res.json({ version: latest.value.version })
+        resolvedVersion = latest.value.version
       } else {
         // Increment version
         const parts = latest.value.version.split('.')
@@ -68,7 +80,7 @@ router.post('/dataset/version', async (req, res) => {
           timestamp: Date.now()
         }
         await db.put(newEntry)
-        return res.json({ version: newVersion })
+        resolvedVersion = newVersion
       }
     } else {
       // Initialize as v1.0
@@ -82,336 +94,411 @@ router.post('/dataset/version', async (req, res) => {
         timestamp: Date.now()
       }
       await db.put(newEntry)
-      return res.json({ version: initialVersion })
+      resolvedVersion = initialVersion
     }
+    log.info({ event: 'dataset.version.resolved', dataset_name, version: resolvedVersion })
+    return res.json({ version: resolvedVersion })
   } catch (error) {
-    console.error('[Audit Controller Error] Failed to resolve version:', error)
+    log.error({ event: 'dataset.version.resolve_failed', dataset_name: req.body.dataset_name })
     res.status(500).json({ error: error.message })
   }
 })
 
 // POST /audit/dataset/directory
 router.post('/dataset/directory', async (req, res) => {
-  try {
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.dataset.build_directory', async (span) => {
+    const log = getLogger()
     const { files } = req.body
-    const helia = getHelia()
-    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+    span.setAttributes({ 'dataset.file_count': files.length })
+    try {
+      const helia = getHelia()
+      if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+      log.info({ event: 'dataset.directory.building', file_count: files.length })
 
-    console.log(`[Audit Controller] Building directory for ${files.length} files...`)
-
-    const buildTree = (files) => {
-      const tree = {}
-      for (const file of files) {
-        const parts = file.path.split('/')
-        let node = tree
-        for (let i = 0; i < parts.length - 1; i++) {
-          if (!node[parts[i]]) node[parts[i]] = {}
-          node = node[parts[i]]
+      const buildTree = (files) => {
+        const tree = {}
+        for (const file of files) {
+          const parts = file.path.split('/')
+          let node = tree
+          for (let i = 0; i < parts.length - 1; i++) {
+            if (!node[parts[i]]) node[parts[i]] = {}
+            node = node[parts[i]]
+          }
+          node[parts[parts.length - 1]] = CID.parse(file.cid)
         }
-        node[parts[parts.length - 1]] = CID.parse(file.cid)
-      }
-      return tree
-    }
-
-    const createDirNode = async (helia, node) => {
-      const links = []
-      for (const [name, value] of Object.entries(node)) {
-        if (value instanceof CID) {
-          links.push(dagPB.createLink(name, 0, value))
-        } else {
-          const childCid = await createDirNode(helia, value)
-          links.push(dagPB.createLink(name, 0, childCid))
-        }
+        return tree
       }
 
-      const unixfsDir = new UnixFS({ type: 'directory' })
-      const node2 = dagPB.createNode(unixfsDir.marshal(), links)
-      const bytes = dagPB.encode(node2)
-      const hash = await sha256.digest(bytes)
-      const cid = CID.create(1, dagPB.code, hash)
-      await helia.blockstore.put(cid, bytes)
-      return cid
+      const createDirNode = async (helia, node) => {
+        const links = []
+        for (const [name, value] of Object.entries(node)) {
+          if (value instanceof CID) {
+            links.push(dagPB.createLink(name, 0, value))
+          } else {
+            const childCid = await createDirNode(helia, value)
+            links.push(dagPB.createLink(name, 0, childCid))
+          }
+        }
+
+        const unixfsDir = new UnixFS({ type: 'directory' })
+        const node2 = dagPB.createNode(unixfsDir.marshal(), links)
+        const bytes = dagPB.encode(node2)
+        const hash = await sha256.digest(bytes)
+        const cid = CID.create(1, dagPB.code, hash)
+        await helia.blockstore.put(cid, bytes)
+        return cid
+      }
+
+      const tree = buildTree(files)
+      const rootCid = await createDirNode(helia, tree)
+
+      span.setAttributes({ 'dataset.root_cid': rootCid.toString() })
+      log.info({ event: 'dataset.directory.built', root_cid: rootCid.toString(), file_count: files.length })
+      res.status(201).json({ status: 'success', root_cid: rootCid.toString(), file_count: files.length })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'dataset.directory.build_failed', file_count: files?.length })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
     }
-
-    const tree = buildTree(files)
-    const rootCid = await createDirNode(helia, tree)
-
-    console.log(`[Audit Controller] Root CID: ${rootCid}`)
-    res.status(201).json({ status: 'success', root_cid: rootCid.toString(), file_count: files.length })
-  } catch (error) {
-    console.error('[Audit Controller Error]', error)
-    res.status(500).json({ error: error.message })
-  }
+  })
 })
 
 // POST /audit/packet - Receive and store audit packet
 router.post('/packet', async (req, res) => {
-  const { packet, packet_hash } = req.body
-
-  // 1. Anchor the packet on blockchain
-  let txHash = 'N/A'
-  try {
-    if (packet.type === 'session') {
-      if (packet.action === 'start') {
-        // For session start, we anchor the dataset merkle root
-        txHash = await startSession(packet.session_id, packet.payload.dataset_merkle_root)
-      } else if (packet.action === 'end') {
-        // For session complete, we anchor the final packet hash
-        txHash = await completeSession(packet.session_id, packet_hash)
-      }
-    } else {
-      // For steps and epochs, we anchor by syncing the latest packet hash to the session
-      const stepId = packet.type === 'step' ? packet.payload.id : packet.payload.step_id
-      txHash = await syncProgress(packet.session_id, packet_hash, stepId)
-    }
-    console.log('[Audit Controller] Audit anchored | tx:', txHash)
-  } catch (bcError) {
-    console.error('[Audit Controller Error] Blockchain anchoring failed:', bcError.message)
-    // No need to write off-chain data
-    return res.status(500).json({
-      error: 'Blockchain anchoring failed',
-      detail: bcError.message
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.packet.store', async (span) => {
+    const log = getLogger()
+    const { packet, packet_hash } = req.body
+    span.setAttributes({
+      'packet.type': packet.type,
+      'packet.action': packet.action ?? '',
+      'session.id': packet.session_id,
     })
-  }
 
-  //2. Store packet into OrbitDB only if on-chain anchoring succeeded
-  let blockHeight = null
-  try {
-    const entryId = deriveEntryId(packet)
-    if (packet.type === 'session' && packet.action === 'start') {
-        blockHeight = await getBlockHeight()
-    }
-    const auditEntry = {
-      _id: entryId,
-      packet: packet,
-      packet_hash: packet_hash,
-      tx_hash: txHash,
-      timestamp: new Date().toISOString()
-    }
-    auditEntry.block_height = blockHeight
 
-    const db = getDB()
-    await db.put(auditEntry)
-    console.log(`[Audit Controller] Audit stored | ${entryId}`)
-  } catch (dbError) {
-    fs.appendFileSync('./orphan-txs.log', 
-      JSON.stringify({
+    // 1. Anchor the packet on blockchain
+    let txHash = 'N/A'
+    try {
+      if (packet.type === 'session') {
+        if (packet.action === 'start') {
+          // For session start, we anchor the dataset merkle root
+          txHash = await startSession(packet.session_id, packet.payload.dataset_merkle_root)
+        } else if (packet.action === 'end') {
+          // For session complete, we anchor the final packet hash
+          txHash = await completeSession(packet.session_id, packet_hash)
+        }
+      } else {
+        // For steps and epochs, we anchor by syncing the latest packet hash to the session
+        const stepId = packet.type === 'step' ? packet.payload.id : packet.payload.step_id
+        txHash = await syncProgress(packet.session_id, packet_hash, stepId)
+      }
+      span.setAttributes({ 'tx.hash': txHash })
+      log.info({ event: 'packet.anchored', session_id: packet.session_id, packet_type: packet.type, tx_hash: txHash })
+    } catch (bcError) {
+      span.recordException(bcError)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'packet.anchor_failed', session_id: packet.session_id, packet_type: packet.type })
+      span.end()
+      // No need to write off-chain data
+      return res.status(500).json({
+        error: 'Blockchain anchoring failed',
+        detail: bcError.message
+      })
+    }
+
+    //2. Store packet into OrbitDB only if on-chain anchoring succeeded
+    let blockHeight = null
+    try {
+      const entryId = deriveEntryId(packet)
+      if (packet.type === 'session' && packet.action === 'start') {
+          blockHeight = await getBlockHeight()
+      }
+      const auditEntry = {
+        _id: entryId,
+        packet, packet_hash,
         tx_hash: txHash,
-        packet_hash, packet, 
-        block_height: blockHeight,
-        timestamp: Date.now()
-      }) + '\n'
-    )
-    console.log('[OrbitDB] Error:', dbError.message)
-    console.error('[OrbitDB] Write failed, transaction logged to orphan-txs.log:', txHash)
+        timestamp: new Date().toISOString(),
+        block_height: blockHeight
+      }
 
-    // still returns success because on-chain anchoring is done
-    return res.status(201).json({ status: 'partial', tx_hash: txHash })
-  }
-
-  res.status(201).json({ 
-    status: 'success', 
-    tx_hash: txHash
+      const db = getDB()
+      await db.put(auditEntry)
+      log.info({ event: 'packet.stored', entry_id: entryId, session_id: packet.session_id })
+      span.end()
+      return res.status(201).json({ status: 'success', tx_hash: txHash })
+    } catch (dbError) {
+      fs.appendFileSync('./orphan-txs.log', 
+        JSON.stringify({
+          tx_hash: txHash,
+          packet_hash, packet, 
+          block_height: blockHeight,
+          timestamp: Date.now()
+        }) + '\n'
+      )
+      span.recordException(dbError)
+      log.error({ event: 'packet.orbitdb_write_failed', session_id: packet.session_id, tx_hash: txHash })
+      span.end()
+      // still returns success because on-chain anchoring is done
+      return res.status(201).json({ status: 'partial', tx_hash: txHash })
+    }
   })
 })
 
 // GET /audit/verify/session/:id - Verify entire session integrity by comparing local records with blockchain anchor
 router.get('/verify/session/:id', async (req, res) => {
-  try {
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.verify.session', async (span) => {
+    const log = getLogger()
     const sessionId = req.params.id
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+    span.setAttributes({ 'session.id': sessionId })
 
-    const sessionOnChain = await getSession(sessionId)
-    if (!sessionOnChain || !sessionOnChain.isActive) {
-      return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
+    try {
+      const db = getDB()
+      if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+      const sessionOnChain = await getSession(sessionId)
+      if (!sessionOnChain || !sessionOnChain.isActive) {
+        return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
+      }
+
+      // get all packets for this session
+      const entries = await db.all()
+      const sessionPackets = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id === sessionId)
+
+      // sort packets by timestamp in reverse order
+      sessionPackets.sort((a, b) => new Date(b.value.timestamp).getTime() - new Date(a.value.timestamp).getTime())
+
+      const sessionEndAnchorHash = sessionOnChain.latestPacketHash
+      const calculatedHash = calculatePacketHash(sessionPackets[0].value.packet)
+      let sessionEndValidity = 'untrusted'
+
+      if (verifyHashMatch(calculatedHash, sessionEndAnchorHash)) {
+        sessionEndValidity = 'verified'
+      } else {
+        sessionEndValidity = 'invalid'
+      }
+
+      const blockHeight = sessionPackets[sessionPackets.length - 1].value.block_height
+      const { anchorMap, sessionStartMerkleRoot } = await getAnchorsFromChain(sessionId, blockHeight)
+      
+      const sessionStartPacket = sessionPackets[sessionPackets.length - 1]
+      
+      const calculatedStartHash = calculatePacketHash(sessionStartPacket.value.packet)
+      const storedStartHash = sessionStartPacket.value.packet_hash
+      const packetIntact = verifyHashMatch(calculatedStartHash, storedStartHash)
+      const merkleRootMatch = verifyHashMatch(sessionStartPacket.value.packet.payload.dataset_merkle_root, sessionStartMerkleRoot)
+      const sessionStartValidity = packetIntact && merkleRootMatch ? 'verified' : 'invalid'
+
+      const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
+
+      const isValid = sessionEndValidity === 'verified' && sessionStartValidity === 'verified'
+      span.setAttributes({ 'verify.result': isValid })
+      log.info({ event: 'session.verified', session_id: sessionId, result: isValid })
+
+      res.status(200).json({
+        sessionStartValidity: sessionStartValidity,
+        sessionEndValidity: sessionEndValidity,
+        stepsValidities: validityStates
+      })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'session.verify_failed', session_id: sessionId })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
     }
-
-    // get all packets for this session
-    const entries = await db.all()
-    const sessionPackets = entries.filter(e => !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') && e.value.packet.session_id === sessionId)
-
-    // sort packets by timestamp in reverse order
-    sessionPackets.sort((a, b) => new Date(b.value.timestamp).getTime() - new Date(a.value.timestamp).getTime())
-
-    const sessionEndAnchorHash = sessionOnChain.latestPacketHash
-    const calculatedHash = calculatePacketHash(sessionPackets[0].value.packet)
-    let sessionEndValidity = 'untrusted'
-
-    if (verifyHashMatch(calculatedHash, sessionEndAnchorHash)) {
-      sessionEndValidity = 'verified'
-    } else {
-      sessionEndValidity = 'invalid'
-    }
-
-    const blockHeight = sessionPackets[sessionPackets.length - 1].value.block_height
-    const { anchorMap, sessionStartMerkleRoot } = await getAnchorsFromChain(sessionId, blockHeight)
-    
-    const sessionStartPacket = sessionPackets[sessionPackets.length - 1]
-    
-    const calculatedStartHash = calculatePacketHash(sessionStartPacket.value.packet)
-    const storedStartHash = sessionStartPacket.value.packet_hash
-    const packetIntact = verifyHashMatch(calculatedStartHash, storedStartHash)
-    const merkleRootMatch = verifyHashMatch(sessionStartPacket.value.packet.payload.dataset_merkle_root, sessionStartMerkleRoot)
-    const sessionStartValidity = packetIntact && merkleRootMatch ? 'verified' : 'invalid'
-
-    const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
-
-    res.status(200).json({
-      sessionStartValidity: sessionStartValidity,
-      sessionEndValidity: sessionEndValidity,
-      stepsValidities: validityStates
-    })
-  } catch (error) {
-    console.error('[Audit Controller Error] Verification failed:', error)
-    res.status(500).json({ error: error.message })
-  }
+  })
 })
 
 // GET /audit/verify/session/:sessionId/dataset - Verify dataset integrity by comparing local merkle root with blockchain anchor
 router.get('/verify/session/:sessionId/dataset', async (req, res) => {
-  const tempDir = path.join(os.tmpdir(), `audit-dataset-${Date.now()}`);
+  const tempDir = path.join(os.tmpdir(), `audit-dataset-${Date.now()}`)
 
-  try {
-    const { sessionId } = req.params
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.verify.dataset', async (span) => {
+    const log = getLogger()
+    const sessionId = req.params.id
+    span.setAttributes({ 'session.id': sessionId })
 
-    const entries = await db.all()
-    const sessionStartPacket = entries.find(e => 
-      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
-      e.value.packet.session_id === sessionId && 
-      e.value.packet.type === 'session' && 
-      e.value.packet.action === 'start'
-    )
+    try {
+      const db = getDB()
+      if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
-    if (!sessionStartPacket) {
-      return res.status(404).json({ error: 'Session start packet not found in OrbitDB' })
-    }
+      const entries = await db.all()
+      const sessionStartPacket = entries.find(e => 
+        !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
+        e.value.packet.session_id === sessionId && 
+        e.value.packet.type === 'session' && 
+        e.value.packet.action === 'start'
+      )
 
-    const sessionOnChain = await getSession(sessionId)
-    if (!sessionOnChain || !sessionOnChain.isActive) {
-      return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
-    }
-
-    const anchorMerkleRoot = sessionOnChain.datasetMerkleRoot
-  
-    // download dataset snapshot from IPFS using the CID in the session start packet
-    const datasetCid = sessionStartPacket.value.packet.payload.dataset_cid
-    const helia = getHelia()
-    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-
-    await downloadDirectory(helia, datasetCid, tempDir)
-
-    const calculatedMerkleRoot = calculateDatasetMerkleRoot(tempDir)
-    const isValid = verifyHashMatch(calculatedMerkleRoot, anchorMerkleRoot)
-
-    console.log(`[Audit Controller] Dataset Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
-
-    res.json({
-      is_valid: isValid,
-      details: {
-        anchor_merkle_root: anchorMerkleRoot,
-        calculated_merkle_root: calculatedMerkleRoot,
-        dataset_cid: datasetCid
+      if (!sessionStartPacket) {
+        return res.status(404).json({ error: 'Session start packet not found in OrbitDB' })
       }
-    })
 
-  } catch (error) {
-    console.error('[Audit Controller Error] Verification failed:', error)
-    res.status(500).json({ error: error.message })
-  } finally {
-    await fsPromises.rm(tempDir, { recursive: true, force: true }).catch(() => {})
-  }
+      const sessionOnChain = await getSession(sessionId)
+      if (!sessionOnChain || !sessionOnChain.isActive) {
+        return res.status(404).json({ error: 'No active session anchor found on blockchain for this session' })
+      }
+
+      const anchorMerkleRoot = sessionOnChain.datasetMerkleRoot
+    
+      // download dataset snapshot from IPFS using the CID in the session start packet
+      const datasetCid = sessionStartPacket.value.packet.payload.dataset_cid
+      const helia = getHelia()
+      if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+
+      await tracer.startActiveSpan('audit.ipfs.download_directory', async (dlSpan) => {
+        dlSpan.setAttributes({ 'dataset.cid': datasetCid })
+        try {
+          await downloadDirectory(helia, datasetCid, tempDir)
+        } finally {
+          dlSpan.end()
+        }
+      })
+
+      const calculatedMerkleRoot = calculateDatasetMerkleRoot(tempDir)
+      const isValid = verifyHashMatch(calculatedMerkleRoot, anchorMerkleRoot)
+
+      span.setAttributes({ 'verify.result': isValid })
+      log.info({ event: 'dataset.verified', session_id: sessionId, result: isValid })
+
+      res.json({
+        is_valid: isValid,
+        details: {
+          anchor_merkle_root: anchorMerkleRoot,
+          calculated_merkle_root: calculatedMerkleRoot,
+          dataset_cid: datasetCid
+        }
+      })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'dataset.verify_failed', session_id: sessionId })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
+      await fsPromises.rm(tempDir, { recursive: true, force: true }).catch(() => {})
+    }
+  })
 })
 
 // GET /audit/verify/session/:sessionId/model - Verify model weights integrity by comparing local hash with blockchain anchor
 router.get('/verify/session/:sessionId/model', async (req, res) => {
-  try {
-    const { sessionId } = req.params
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.verify.model', async (span) => {
+    const log = getLogger()
+    const sessionId = req.params.id
+    span.setAttributes({ 'session.id': sessionId })
 
-    // find session end packet to get the final model hash
-    const entries = await db.all()
-    const sessionEndPacket = entries.find(e => 
-      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
-      e.value.packet.session_id === sessionId && 
-      e.value.packet.type === 'session' && 
-      e.value.packet.action === 'end'
-    )
+    try {
+      const db = getDB()
+      if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
-    if (!sessionEndPacket) {
-      return res.status(404).json({ error: 'Session end packet not found in OrbitDB' })
-    }
+      // find session end packet to get the final model hash
+      const entries = await db.all()
+      const sessionEndPacket = entries.find(e => 
+        !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
+        e.value.packet.session_id === sessionId && 
+        e.value.packet.type === 'session' && 
+        e.value.packet.action === 'end'
+      )
 
-    const targetModelHash = sessionEndPacket.value.packet.payload.model_hash
-
-    const modelCid = sessionEndPacket.value.packet.payload.model_cid
-    const helia = getHelia()
-    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-
-    const calculatedModelHash = await calculateHashFromStream(helia, modelCid)
-    
-    const isValid = verifyHashMatch(calculatedModelHash, targetModelHash)
-    console.log(`[Audit Controller] Model Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
-
-    res.json({
-      is_valid: isValid,
-      details: {
-        target_model_hash: targetModelHash,
-        calculated_model_hash: calculatedModelHash,
-        model_cid: modelCid
+      if (!sessionEndPacket) {
+        return res.status(404).json({ error: 'Session end packet not found in OrbitDB' })
       }
-    })
-  } catch (error) {
-    console.error('[Audit Controller Error] Verification failed:', error)
-    res.status(500).json({ error: error.message })
-  }
+
+      const targetModelHash = sessionEndPacket.value.packet.payload.model_hash
+
+      const modelCid = sessionEndPacket.value.packet.payload.model_cid
+      const helia = getHelia()
+      if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+
+      const calculatedModelHash = await calculateHashFromStream(helia, modelCid)
+      
+      const isValid = verifyHashMatch(calculatedModelHash, targetModelHash)
+
+      span.setAttributes({ 'verify.result': isValid })
+      log.info({ event: 'model.verified', session_id: sessionId, result: isValid })
+
+      res.json({
+        is_valid: isValid,
+        details: {
+          target_model_hash: targetModelHash,
+          calculated_model_hash: calculatedModelHash,
+          model_cid: modelCid
+        }
+      })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'model.verify_failed', session_id: sessionId })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
+    }
+  })
 })
 
 // GET /audit/verify/session/:sessionId/epoch/:epochId/checkpoint - Verify specific epoch integrity by comparing local record with blockchain anchor
 router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, res) => {
-  try {
+  const tracer = trace.getTracer('audit')
+  return tracer.startActiveSpan('audit.verify.checkpoint', async (span) => {
+    const log = getLogger()
     const { sessionId, epochId } = req.params
-    const db = getDB()
-    if (!db) return res.status(503).json({ error: 'Database not initialized' })
+    span.setAttributes({ 'session.id': sessionId, 'epoch.id': epochId })
 
-    // find the specific epoch packet
-    const entries = await db.all()
-    const epochPacket = entries.find(e => 
-      !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
-      e.value.packet.session_id === sessionId && 
-      e.value.packet.type === 'epoch' && 
-      e.value.packet.payload.id === parseInt(epochId)
-    )
+    try {
+      const db = getDB()
+      if (!db) return res.status(503).json({ error: 'Database not initialized' })
 
-    if (!epochPacket) {
-      return res.status(404).json({ error: 'Epoch packet not found in OrbitDB' })
-    }
+      // find the specific epoch packet
+      const entries = await db.all()
+      const epochPacket = entries.find(e => 
+        !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
+        e.value.packet.session_id === sessionId && 
+        e.value.packet.type === 'epoch' && 
+        e.value.packet.payload.id === parseInt(epochId)
+      )
 
-    const targetCheckpointHash = epochPacket.value.packet.payload.checkpoint_hash
-
-    const checkpointCid = epochPacket.value.packet.payload.checkpoint_cid
-    const helia = getHelia()
-    if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
-    const calculatedCheckpointHash = await calculateHashFromStream(helia, checkpointCid)
-    
-    const isValid = verifyHashMatch(calculatedCheckpointHash, targetCheckpointHash)
-    console.log(`[Audit Controller] Epoch Checkpoint Integrity Check: ${isValid ? 'PASSED' : 'FAILED'}`)
-
-    res.json({
-      is_valid: isValid,
-      details: {
-        target_checkpoint_hash: targetCheckpointHash,
-        calculated_checkpoint_hash: calculatedCheckpointHash,
-        checkpoint_cid: checkpointCid
+      if (!epochPacket) {
+        return res.status(404).json({ error: 'Epoch packet not found in OrbitDB' })
       }
-    })
-  } catch (error) {
-    console.error('[Audit Controller Error] Verification failed:', error)
-    res.status(500).json({ error: error.message })
-  }
+
+      const targetCheckpointHash = epochPacket.value.packet.payload.checkpoint_hash
+
+      const checkpointCid = epochPacket.value.packet.payload.checkpoint_cid
+      const helia = getHelia()
+      if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
+      const calculatedCheckpointHash = await calculateHashFromStream(helia, checkpointCid)
+      
+      const isValid = verifyHashMatch(calculatedCheckpointHash, targetCheckpointHash)
+
+      span.setAttributes({ 'verify.result': isValid })
+      log.info({ event: 'checkpoint.verified', session_id: sessionId, epoch_id: epochId, result: isValid })
+
+      res.json({
+        is_valid: isValid,
+        details: {
+          target_checkpoint_hash: targetCheckpointHash,
+          calculated_checkpoint_hash: calculatedCheckpointHash,
+          checkpoint_cid: checkpointCid
+        }
+      })
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      log.error({ event: 'checkpoint.verify_failed', session_id: sessionId, epoch_id: epochId })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
+    }
+  })
 })
 
 // GET /audit/sessions - Retrieve unique training sessions
@@ -537,8 +624,10 @@ router.get('/sessions/:sessionId', async (req, res) => {
   try {
     const sessionId = req.params.sessionId
     const sessionOnChain = await getSession(sessionId)
-    if (!sessionOnChain)
+    if (!sessionOnChain) {
+      log.error({ event: 'session.not_found_on_chain', session_id: sessionId })
       return res.status(404).json({ error: 'Session not found on chain' })
+    }
 
     res.json({
       session_id: sessionId,
@@ -548,7 +637,7 @@ router.get('/sessions/:sessionId', async (req, res) => {
       isCompleted: sessionOnChain.isCompleted,
     })
   } catch (error) {
-    console.error('[Audit Controller Error] Failed to fetch session on-chain info:', error)
+    log.error({ event: 'session.fetch_failed', session_id: req.params.sessionId })
     res.status(500).json({ error: error.message })
   }
 })

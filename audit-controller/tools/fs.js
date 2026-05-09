@@ -2,6 +2,7 @@ import { CID } from 'multiformats/cid'
 import { unixfs } from '@helia/unixfs'
 import fsPromises from 'fs/promises';
 import path from 'path';
+import { trace } from '@opentelemetry/api'
 
 /**
  * Download IPFS directory from Helia to local filesystem
@@ -35,5 +36,10 @@ const _walkByCid = async (ufs, cid, localPath) => {
       totalBytes += buf.length
     }
     await fsPromises.writeFile(localPath, Buffer.concat(chunks))
+
+    trace.getActiveSpan()?.addEvent('ipfs.file.downloaded', {
+      'file.path': localPath,
+      'file.size_bytes': totalBytes
+    })
   }
 }

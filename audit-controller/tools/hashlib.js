@@ -6,6 +6,7 @@ import { pipeline } from 'stream/promises';
 import { unixfs } from '@helia/unixfs'
 import { Readable } from 'stream'
 import { CID } from 'multiformats/cid'
+import { getLogger } from './instrumentation.js'
 
 /**
  * Calulate SHA256 hash of Packet, align with Python HashingEngine
@@ -65,6 +66,7 @@ export const verifyHashMatch = (calculatedHash, targetHash) => {
  * @returns {string} - the Merkle Root hash as a 0x-prefixed hex string
  */
 export const calculateDatasetMerkleRoot = (rootDir) => {
+    const log = getLogger();
     // get file path of engine.py, which contains the same logic for calculating Merkle Root as the audit controller
     const enginePath = path.resolve(process.cwd(), '../audit_sdk/hashing_engine/engine.py');
 
@@ -78,7 +80,7 @@ export const calculateDatasetMerkleRoot = (rootDir) => {
         const result = output.split('\n').pop().trim();
         return `0x${result}`;
     } catch (error) {
-        console.error('Error calculating Merkle Root:', error);
+        log.error({ event: 'merkle_root.calculate_failed', root_dir: rootDir, error: error.message });
         throw error;
     }
 }

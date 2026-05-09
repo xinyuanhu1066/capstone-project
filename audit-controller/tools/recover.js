@@ -1,12 +1,15 @@
 import fs from 'fs'
 import readline from 'readline'
 import { deriveEntryId } from './strings.js'
+import { getLogger } from './instrumentation.js'
 
 const ORPHAN_LOG = './orphan-txs.log'
 const RECOVERED_LOG = './orphan-txs.recovered.log'
 
 export const recoverOrphanTxs = async (db) => {
   if (!fs.existsSync(ORPHAN_LOG)) return
+
+  const log = getLogger()
 
   const rl = readline.createInterface({
     input: fs.createReadStream(ORPHAN_LOG),
@@ -24,7 +27,7 @@ export const recoverOrphanTxs = async (db) => {
 
       const existing = await db.get(entryId).catch(() => null)
       if (existing) {
-        recovered.push({ txHash, reason: 'already exists' })
+        recovered.push({ tx_hash, reason: 'already exists' })
         continue
       }
 
@@ -32,12 +35,16 @@ export const recoverOrphanTxs = async (db) => {
         _id: entryId,
         packet,
         packet_hash,
-        tx_hash: txHash,
+        tx_hash,
         timestamp: new Date(timestamp).toISOString(),
         recovered: true
       })
-      recovered.push({ txHash, entryId })
+      recovered.push({ tx_hash, entryId })
     } catch (err) {
+      log.error({
+        event: 'orphan_tx.recover_entry_failed',
+        entry_id: entryId, error: err.message
+      })
       failed.push({ line, error: err.message })
     }
   }
@@ -46,14 +53,14 @@ export const recoverOrphanTxs = async (db) => {
     fs.appendFileSync(RECOVERED_LOG,
       recovered.map(r => JSON.stringify(r)).join('\n') + '\n'
     )
-    console.log(`[Recovery] Recovered ${recovered.length} orphan tx(s)`)
+    log.info({ event: 'orphan_tx.recovered', count: recovered.length })
   }
 
   if (failed.length > 0) {
     fs.writeFileSync(ORPHAN_LOG,
       failed.map(f => f.line).join('\n') + '\n'
     )
-    console.warn(`[Recovery] ${failed.length} orphan tx(s) still pending`)
+    log.warn({ event: 'orphan_tx.still_pending', count: failed.length })
   } else {
     fs.unlinkSync(ORPHAN_LOG)
   }
