@@ -1,0 +1,128 @@
+// ============================================================
+// Grafana Alloy Configuration
+// Collects logs from audit-controller and watcher processes,
+// parses mixed JSON + plaintext output, ships to Loki
+// ============================================================
+
+// ----------------------------------------------------------
+// 1. Log Sources
+//    Read from files written by:
+//      node ... 2>&1 | tee ./logs/audit-controller.log
+//      python trainer.py 2>&1 | tee ./logs/watcher.log
+// ----------------------------------------------------------
+
+loki.source.file "audit_controller" {
+  targets = [{
+    __path__ = "/logs/audit-controller.log",
+    service  = "audit-controller",
+    env      = "development",
+  }]
+  forward_to = [loki.process.audit_controller_pipeline.receiver]
+}
+
+loki.source.file "watcher" {
+  targets = [{
+    __path__ = "/logs/watcher.log",
+    service  = "watcher",
+    env      = "development",
+  }]
+  forward_to = [loki.process.watcher_pipeline.receiver]
+}
+
+// ----------------------------------------------------------
+// 2. audit-controller pipeline
+//    audit.js uses pino → every line is JSON
+// ----------------------------------------------------------
+
+loki.process "audit_controller_pipeline" {
+
+  // Parse JSON fields
+  stage.json {
+    expressions = {
+      level      = "level",
+      event      = "event",
+      session_id = "session_id",
+      trace_id   = "traceId",
+      span_id    = "spanId",
+      tx_hash    = "tx_hash",
+      entry_id   = "entry_id",
+    }
+  }
+
+  // Promote extracted fields to Loki stream labels
+  // (keep label cardinality low — only stable, low-cardinality fields)
+  stage.labels {
+    values = {
+      level   = "",
+      event   = "",
+    }
+  }
+
+  // Promote trace context to Loki structured metadata
+  // (enables "jump to trace" in Grafana → Jaeger)
+  stage.structured_metadata {
+    values = {
+      traceID    = "trace_id",
+      spanID     = "span_id",
+      session_id = "session_id",
+      tx_hash    = "tx_hash",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+// ----------------------------------------------------------
+// 3. watcher pipeline
+//    watcher.py has mixed output:
+//      - JSON lines from logger (structured events)
+//      - plaintext lines from print() (training progress)
+// ----------------------------------------------------------
+
+loki.process "watcher_pipeline" {
+
+  // Attempt JSON extraction on every line.
+  // Lines that are not JSON will simply yield empty strings
+  // for all expressions — no error, no line dropped.
+  stage.json {
+    expressions = {
+      level      = "level",
+      event      = "event",
+      session_id = "session_id",
+      trace_id   = "traceId",
+      span_id    = "spanId",
+    }
+  }
+
+  // Set labels from extracted fields (empty values are ignored by Loki)
+  stage.labels {
+    values = {
+      level   = "",
+      event   = "",
+    }
+  }
+
+  // Promote trace context only when present (JSON lines)
+  stage.structured_metadata {
+    values = {
+      traceID    = "trace_id",
+      spanID     = "span_id",
+      session_id = "session_id",
+    }
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+// ----------------------------------------------------------
+// 4. Loki writer
+//    Points to the Loki container on the observability network.
+//    Podman rootless: use host.containers.internal instead of
+//    localhost to reach the host-mapped container port.
+// ----------------------------------------------------------
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

@@ -19,15 +19,46 @@ from opentelemetry.sdk.metrics.export import PeriodicExportingMetricReader
 from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+from opentelemetry import trace as otel_trace
 import logging
+import json
 
-
-logger = logging.getLogger("audit_sdk.watcher")
 
 # Configuration
 CONTROLLER_URL = os.getenv("AUDIT_CONTROLLER_URL", "http://localhost:3000")
 PACKET_API_URL = f"{CONTROLLER_URL}/audit/packet"
 BLOB_API_URL = f"{CONTROLLER_URL}/audit/blob"
+
+
+class JsonFormatter(logging.Formatter):
+    _SKIP_FIELDS = frozenset((
+        'msg', 'args', 'levelname', 'levelno', 'pathname', 'filename',
+        'module', 'exc_info', 'exc_text', 'stack_info', 'lineno',
+        'funcName', 'created', 'msecs', 'relativeCreated', 'thread',
+        'threadName', 'processName', 'process', 'name', 'message'
+    ))
+
+    def format(self, record):
+        log_data = {
+            'level': record.levelname.lower(),
+            'event': record.getMessage(),
+            'logger': record.name,
+            'time': self.formatTime(record)
+        }
+        if record.exc_info:
+            log_data['exc_info'] = self.formatException(record.exc_info)
+        for key, val in record.__dict__.items():
+            if key not in self._SKIP_FIELDS:
+                log_data[key] = val
+        
+        span = otel_trace.get_current_span()
+        if span and span.is_recording():
+            ctx = span.get_span_context()
+            log_data['traceId'] = format(ctx.trace_id, '032x')
+            log_data['spanId'] = format(ctx.span_id, '016x')
+        return json.dumps(log_data)
+
 
 class TrainingWatcher:
     """
@@ -43,11 +74,18 @@ class TrainingWatcher:
     def __init__(
             self, dataset_dir: Optional[str] = None,
             step_interval: int = 100, dataset_name: str = "Unknown",
-            exclude: list = []):
+            exclude: list = [],
+            log_path: str = "watcher.log"):
         if hasattr(self, '_initialized') and self._initialized:
             return
         
-        provider = TracerProvider()
+        self._setup_logging(log_path)
+        
+        provider = TracerProvider(
+            resource=Resource.create({
+                SERVICE_NAME: "watcher"
+            })
+        )
         provider.add_span_processor(
             BatchSpanProcessor(OTLPSpanExporter(endpoint="http://localhost:4318/v1/traces"))
         )
@@ -59,7 +97,12 @@ class TrainingWatcher:
             OTLPMetricExporter(endpoint="http://localhost:4318/v1/metrics"),
             export_interval_millis=5000
         )
-        meter_provider = MeterProvider(metric_readers=[metric_reader])
+        meter_provider = MeterProvider(
+            resource=Resource.create({
+                SERVICE_NAME: "watcher"
+            }),
+            metric_readers=[metric_reader]
+        )
         metrics.set_meter_provider(meter_provider)
         meter = metrics.get_meter("watcher")
 
@@ -111,11 +154,24 @@ class TrainingWatcher:
         self.processor_thread.start()
         
         self._apply_global_patches()
-        logger.info("watcher.session_started", extra={
+        self.logger.info("watcher.session_started", extra={
             "session_id": self.session_id,
             "dataset_name": self.dataset_name,
             "dataset_version": self.dataset_version
         })
+
+    def _setup_logging(self, log_path: str):
+        os.makedirs(os.path.dirname(log_path), exist_ok=True)
+
+        handler = logging.FileHandler(log_path)
+        handler.setFormatter(JsonFormatter())
+
+        watcher_logger = logging.getLogger('audit_sdk.watcher')
+        watcher_logger.addHandler(handler)
+        watcher_logger.setLevel(logging.INFO)
+        watcher_logger.propagate = False
+        
+        self.logger = watcher_logger
 
     def _resolve_dataset_version(self) -> str:
         """Resolve semantic version from OrbitDB via Audit Controller (Identifier Refactor 1.B)."""
@@ -128,7 +184,7 @@ class TrainingWatcher:
             if response.status_code == 200:
                 return response.json().get("version", "v1.0")
         except Exception as e:
-            logger.error("watcher.dataset_version_resolve_failed", extra={
+            self.logger.error("watcher.dataset_version_resolve_failed", extra={
                 "session_id": self.session_id,
                 "error": str(e),
                 "dataset_name": self.dataset_name,
@@ -184,7 +240,7 @@ class TrainingWatcher:
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR)
-                logger.error("watcher.snapshot_dataset_failed", extra={
+                self.logger.error("watcher.snapshot_dataset_failed", extra={
                     "session_id": self.session_id,
                     "dataset_name": self.dataset_name
                 })
@@ -294,7 +350,7 @@ class TrainingWatcher:
                 "checkpoint": checkpoint_data
             })
             span.set_attribute("checkpoint.size_bytes", len(checkpoint_data))
-            logger.info("watcher.epoch_boundary_reached", extra={
+            self.logger.info("watcher.epoch_boundary_reached", extra={
                 "session_id": self.session_id,
                 "step": self.global_step,
                 "epoch": epoch
@@ -338,7 +394,7 @@ class TrainingWatcher:
                 except Exception as e:
                     serialize_span.record_exception(e)
                     serialize_span.set_status(trace.StatusCode.ERROR)
-                    logger.error("watcher.checkpoint_serialize_failed", extra={
+                    self.logger.error("watcher.checkpoint_serialize_failed", extra={
                         "session_id": self.session_id,
                         "error": str(e)
                     })
@@ -356,7 +412,7 @@ class TrainingWatcher:
                 except Exception as e:
                     compress_span.record_exception(e)
                     compress_span.set_status(trace.StatusCode.ERROR)
-                    logger.error("watcher.checkpoint_compress_failed", extra={
+                    self.logger.error("watcher.checkpoint_compress_failed", extra={
                         "session_id": self.session_id,
                         "error": str(e)
                     })
@@ -477,7 +533,7 @@ class TrainingWatcher:
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR)
-                logger.error("watcher.blob_upload_failed", extra={
+                self.logger.error("watcher.blob_upload_failed", extra={
                     "session_id": self.session_id,
                     "blob_size": len(blob)
                 })
@@ -520,7 +576,7 @@ class TrainingWatcher:
             except Exception as e:
                 span.record_exception(e)
                 span.set_status(trace.StatusCode.ERROR)
-                logger.error("watcher.packet_upload_failed", extra={
+                self.logger.error("watcher.packet_upload_failed", extra={
                     "session_id": self.session_id,
                     "packet_type": payload["packet"]["type"],
                     "packet_hash": payload["packet_hash"][:16],
@@ -543,7 +599,7 @@ class TrainingWatcher:
     
     def stop(self, final_model_path: Optional[str] = None):
         """Risk Mitigation: Mandatory final capture (Plan 3.A)"""
-        logger.info("watcher.session_ended", extra={
+        self.logger.info("watcher.session_ended", extra={
             "session_id": self.session_id,
         })
 
@@ -616,13 +672,15 @@ def init(
         step_interval: int = 100,
         hyperparams: Optional[Dict[str, Any]] = None,
         dataset_name: str = "Unknown",
-        exclude: list = []
+        exclude: list = [],
+        log_path: str = "watcher.log"
     ):
     watcher = TrainingWatcher(
         dataset_dir=dataset_dir,
         step_interval=step_interval,
         dataset_name=dataset_name,
-        exclude=exclude
+        exclude=exclude,
+        log_path=log_path
     )
     if hyperparams:
         watcher.configure(hyperparams)

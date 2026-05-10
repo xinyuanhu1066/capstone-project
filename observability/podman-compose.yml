@@ -1,0 +1,140 @@
+version: '3.8'
+
+# ============================================================
+# Observability Stack for Audit Controller + Watcher
+# Compatible with Podman (rootless) and Docker Compose
+#
+# Usage:
+#   podman compose -f docker-compose.observability.yml up -d
+#   docker compose -f docker-compose.observability.yml up -d
+#
+# Prerequisites:
+#   mkdir -p logs
+#   node ... 2>&1 | tee ./logs/audit-controller.log
+#   python trainer.py 2>&1 | tee ./logs/watcher.log
+# ============================================================
+
+services:
+
+  # ----------------------------------------------------------
+  # OpenTelemetry Collector
+  # Receives traces and metrics from audit.js and watcher.py,
+  # then routes: traces → Jaeger, metrics → Prometheus
+  # ----------------------------------------------------------
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    volumes:
+      - ./otel-config.yml:/etc/otel/config.yml:ro,Z
+    command: ["--config=/etc/otel/config.yml"]
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver (audit.js + watcher.py export here)
+      - "8888:8888"   # Collector self-metrics (scraped by Prometheus)
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Jaeger
+  # Stores and visualizes distributed traces
+  # UI: http://localhost:16686
+  # ----------------------------------------------------------
+  jaeger:
+    image: jaegertracing/all-in-one:latest
+    container_name: jaeger
+    environment:
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "16686:16686"   # Jaeger UI
+      - "4317:4317"     # OTLP gRPC (used by otel-collector → jaeger)
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Prometheus
+  # Scrapes and stores metrics exported by otel-collector
+  # UI: http://localhost:9090
+  # ----------------------------------------------------------
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro,Z
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Loki
+  # Stores structured logs shipped by Alloy
+  # ----------------------------------------------------------
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    ports:
+      - "3100:3100"
+    volumes:
+      - loki-data:/loki
+    command: -config.file=/etc/loki/local-config.yaml
+    networks:
+      - observability
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Grafana Alloy
+  # Collects logs from ./logs/*.log on the host,
+  # parses mixed JSON + plaintext, ships to Loki
+  # ----------------------------------------------------------
+  alloy:
+    image: grafana/alloy:latest
+    container_name: alloy
+    volumes:
+      - ./alloy-config.alloy:/etc/alloy/config.alloy:ro,Z
+      - ./logs:/logs:ro,Z   # host log directory (read-only)
+    command: ["run", "--server.http.listen-addr=0.0.0.0:12345", "/etc/alloy/config.alloy"]
+    ports:
+      - "12345:12345"   # Alloy UI (optional, for debugging)
+    networks:
+      - observability
+    depends_on:
+      - loki
+    restart: unless-stopped
+
+  # ----------------------------------------------------------
+  # Grafana
+  # Unified dashboard: Jaeger + Prometheus + Loki
+  # UI: http://localhost:3001
+  # Default login: admin / admin
+  # ----------------------------------------------------------
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+      - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro,Z
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3001:3000"
+    networks:
+      - observability
+    depends_on:
+      - prometheus
+      - loki
+      - jaeger
+    restart: unless-stopped
+
+networks:
+  observability:
+    driver: bridge
+
+volumes:
+  prometheus-data:
+  loki-data:
+  grafana-data:

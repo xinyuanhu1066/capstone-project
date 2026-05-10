@@ -1,10 +1,11 @@
+import os
+import sys
+
 import torch
 import torch.nn as nn
 import torch.optim as optim
-from torchvision import datasets, transforms
 from torch.utils.data import DataLoader
-import os
-import sys
+from torchvision import datasets, transforms
 
 # Ensure audit_sdk is in the path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -85,7 +86,8 @@ def main():
         step_interval=100,
         hyperparams=hyperparams,
         dataset_name="MNIST",
-        exclude=["*.gz"])
+        exclude=["*.gz"],
+        log_path="../observability/logs/watcher.log")
 
     # Data Transformations
     transform = transforms.Compose([

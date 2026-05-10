@@ -4,7 +4,17 @@ import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentation
 import { trace } from '@opentelemetry/api'
 import pino from 'pino'
 
-const logger = pino()
+const logger = pino({
+  transport: {
+    targets: [
+      {
+        target: 'pino/file',
+        options: { destination: '../observability/logs/audit-controller.log', mkdir: true },
+        level: 'info'
+      }
+    ]
+  }
+})
 
 const getLogger = () => {
   const span = trace.getActiveSpan()
