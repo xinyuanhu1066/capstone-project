@@ -117,6 +117,7 @@ services:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
       - GF_FEATURE_TOGGLES_ENABLE=traceqlEditor
+      - GF_PANELS_DISABLE_SANITIZE_HTML=true
     volumes:
       - ./grafana/provisioning:/etc/grafana/provisioning:ro,Z
       - grafana-data:/var/lib/grafana

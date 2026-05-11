@@ -117,6 +117,18 @@ class TrainingWatcher:
             "watcher.dispatch_duration_ms", 
             description="Packet dispatch to controller latency"
         )
+        self.epoch_duration_histogram = meter.create_histogram(
+            "watcher.epoch_duration_ms",
+            description="Time taken per epoch including checkpoint"
+        )
+        self.ipfs_bytes_uploaded_counter = meter.create_counter(
+            "watcher.ipfs_bytes_uploaded_total",
+            description="Total bytes uploaded to IPFS"
+        )
+        self.total_steps_gauge = meter.create_gauge(
+            "watcher.total_steps",
+            description="Actual training step count at latest epoch boundary"
+        )
         
         self.dataset_dir = dataset_dir or os.path.join(os.getcwd(), 'data')
         self.dataset_name = dataset_name
@@ -132,6 +144,7 @@ class TrainingWatcher:
         
         # Risk Mitigation: Step-level metrics tracking for anomaly detection
         self.step_metrics: List[float] = []
+        self._epoch_start_time: float = time.time()
 
         # Generate a unique session ID for this training run
         self.session_id = f"session-{int(time.time())}-{str(uuid.uuid4())[:8]}"
@@ -338,6 +351,14 @@ class TrainingWatcher:
             self.current_epoch += 1
             epoch = self.current_epoch
 
+            epoch_duration = (time.time() - self._epoch_start_time) * 1000
+            self.epoch_duration_histogram.record(
+                epoch_duration,
+                {"session_id": self.session_id, "epoch": str(epoch)}
+            )
+            span.set_attribute("epoch.duration_ms", epoch_duration)
+            self._epoch_start_time = time.time()
+
             # Perform Full Checkpoint Persistence (As per plan Section 2.C)
             checkpoint_data = self._capture_full_checkpoint()
             checkpoint_hash = self.hashing_engine.calculate_sha256(checkpoint_data)
@@ -349,6 +370,10 @@ class TrainingWatcher:
                 "checkpoint_hash": checkpoint_hash,
                 "checkpoint": checkpoint_data
             })
+            self.total_steps_gauge.set(
+                self.global_step,
+                {"session_id": self.session_id}
+            )
             span.set_attribute("checkpoint.size_bytes", len(checkpoint_data))
             self.logger.info("watcher.epoch_boundary_reached", extra={
                 "session_id": self.session_id,
@@ -529,6 +554,10 @@ class TrainingWatcher:
                 if response.status_code == 201:
                     cid = response.json().get("cid")
                     span.set_attribute("blob.cid", cid)
+                    self.ipfs_bytes_uploaded_counter.add(
+                        len(blob),
+                        {"session_id": self.session_id}
+                    )
                     return cid
             except Exception as e:
                 span.record_exception(e)

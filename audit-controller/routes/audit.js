@@ -16,13 +16,26 @@ import { UnixFS } from 'ipfs-unixfs'
 import * as dagPB from '@ipld/dag-pb'
 import { deriveEntryId } from '../tools/strings.js'
 import { getLogger } from '../tools/instrumentation.js'
-import { trace, SpanStatusCode } from '@opentelemetry/api'
+import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 
 const router = express.Router()
 
+const tracer = trace.getTracer('audit')
+const meter = metrics.getMeter('audit')
+
+const verifyDurationHistogram = meter.createHistogram('audit_verify_duration_ms', {
+  description: 'Verification endpoint response time'
+})
+
+const recordVerifyDuration = (startTime, verifyType, isValid) => {
+  verifyDurationHistogram.record(Date.now() - startTime, {
+    verify_type: verifyType,
+    result: isValid ? 'passed' : 'failed'
+  })
+}
+
 // POST /audit/blob - Receive and store large binary data in IPFS
 router.post('/blob', express.raw({ type: 'application/octet-stream', limit: '100mb' }), async (req, res) => {
-  const tracer = trace.getTracer('audit')
   return tracer.startActiveSpan('audit.blob.store', async (span) => {
     const log = getLogger()
     span.setAttributes({ 'blob.size_bytes': req.body.length })
@@ -106,7 +119,6 @@ router.post('/dataset/version', async (req, res) => {
 
 // POST /audit/dataset/directory
 router.post('/dataset/directory', async (req, res) => {
-  const tracer = trace.getTracer('audit')
   return tracer.startActiveSpan('audit.dataset.build_directory', async (span) => {
     const log = getLogger()
     const { files } = req.body
@@ -169,7 +181,6 @@ router.post('/dataset/directory', async (req, res) => {
 
 // POST /audit/packet - Receive and store audit packet
 router.post('/packet', async (req, res) => {
-  const tracer = trace.getTracer('audit')
   return tracer.startActiveSpan('audit.packet.store', async (span) => {
     const log = getLogger()
     const { packet, packet_hash } = req.body
@@ -250,7 +261,7 @@ router.post('/packet', async (req, res) => {
 
 // GET /audit/verify/session/:id - Verify entire session integrity by comparing local records with blockchain anchor
 router.get('/verify/session/:id', async (req, res) => {
-  const tracer = trace.getTracer('audit')
+  const start = Date.now()
   return tracer.startActiveSpan('audit.verify.session', async (span) => {
     const log = getLogger()
     const sessionId = req.params.id
@@ -295,14 +306,18 @@ router.get('/verify/session/:id', async (req, res) => {
 
       const validityStates = await auditAllPackets(sessionPackets.slice(1, sessionPackets.length - 1), anchorMap)
 
-      const isValid = sessionEndValidity === 'verified' && sessionStartValidity === 'verified'
+      const allStepsVerified = Object.values(validityStates).every(v => v === 'verified')
+      const isValid = sessionEndValidity === 'verified' && sessionStartValidity === 'verified' && allStepsVerified
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'session.verified', session_id: sessionId, result: isValid })
+
+      recordVerifyDuration(start, 'session', isValid)
 
       res.status(200).json({
         sessionStartValidity: sessionStartValidity,
         sessionEndValidity: sessionEndValidity,
-        stepsValidities: validityStates
+        stepsValidities: validityStates,
+        isValid
       })
     } catch (error) {
       span.recordException(error)
@@ -317,12 +332,12 @@ router.get('/verify/session/:id', async (req, res) => {
 
 // GET /audit/verify/session/:sessionId/dataset - Verify dataset integrity by comparing local merkle root with blockchain anchor
 router.get('/verify/session/:sessionId/dataset', async (req, res) => {
+  const start = Date.now()
   const tempDir = path.join(os.tmpdir(), `audit-dataset-${Date.now()}`)
 
-  const tracer = trace.getTracer('audit')
   return tracer.startActiveSpan('audit.verify.dataset', async (span) => {
     const log = getLogger()
-    const sessionId = req.params.id
+    const sessionId = req.params.sessionId
     span.setAttributes({ 'session.id': sessionId })
 
     try {
@@ -367,6 +382,7 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
 
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'dataset.verified', session_id: sessionId, result: isValid })
+      recordVerifyDuration(start, 'dataset', isValid)
 
       res.json({
         is_valid: isValid,
@@ -390,10 +406,10 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
 
 // GET /audit/verify/session/:sessionId/model - Verify model weights integrity by comparing local hash with blockchain anchor
 router.get('/verify/session/:sessionId/model', async (req, res) => {
-  const tracer = trace.getTracer('audit')
+  const start = Date.now()
   return tracer.startActiveSpan('audit.verify.model', async (span) => {
     const log = getLogger()
-    const sessionId = req.params.id
+    const sessionId = req.params.sessionId
     span.setAttributes({ 'session.id': sessionId })
 
     try {
@@ -425,6 +441,7 @@ router.get('/verify/session/:sessionId/model', async (req, res) => {
 
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'model.verified', session_id: sessionId, result: isValid })
+      recordVerifyDuration(start, 'model', isValid)
 
       res.json({
         is_valid: isValid,
@@ -447,7 +464,7 @@ router.get('/verify/session/:sessionId/model', async (req, res) => {
 
 // GET /audit/verify/session/:sessionId/epoch/:epochId/checkpoint - Verify specific epoch integrity by comparing local record with blockchain anchor
 router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, res) => {
-  const tracer = trace.getTracer('audit')
+  const start = Date.now()
   return tracer.startActiveSpan('audit.verify.checkpoint', async (span) => {
     const log = getLogger()
     const { sessionId, epochId } = req.params
@@ -481,6 +498,7 @@ router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, r
 
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'checkpoint.verified', session_id: sessionId, epoch_id: epochId, result: isValid })
+      recordVerifyDuration(start, 'checkpoint', isValid)
 
       res.json({
         is_valid: isValid,

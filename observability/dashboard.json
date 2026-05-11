@@ -11,22 +11,31 @@
     { "type": "datasource", "id": "jaeger",     "name": "Jaeger",     "version": "1.0.0" }
   ],
   "title": "AI Training Audit",
-  "uid":   "ai-training-audit",
-  "tags":  ["training", "blockchain", "audit"],
+  "uid": "ai-training-audit-v4",
+  "tags": ["training", "blockchain", "audit"],
   "timezone": "browser",
   "refresh": "30s",
   "schemaVersion": 38,
-  "time": { "from": "now-15m", "to": "now" },
+  "time": { "from": "now-3h", "to": "now" },
 
   "templating": {
     "list": [
       {
-        "name":    "session_id",
-        "label":   "Session",
-        "type":    "query",
+        "name": "session_id",
+        "label": "Session",
+        "type": "query",
         "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
-        "query":   "label_values(session_id)",
+        "query": "label_values({service=~\"watcher|audit-controller\"}, session_id)",
         "refresh": 2,
+        "includeAll": true,
+        "allValue": ".*",
+        "sort": 3
+      },
+      {
+        "name": "verify_type",
+        "label": "Verify Type",
+        "type": "custom",
+        "query": "session,dataset,model,checkpoint",
         "includeAll": true,
         "allValue": ".*"
       }
@@ -51,7 +60,7 @@
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":    "training_loss{session_id=~\"$session_id\"}",
+          "expr": "training_loss{session_id=~\"$session_id\"}",
           "legendFormat": "loss"
         }
       ],
@@ -68,52 +77,34 @@
       "id": 3,
       "title": "Total Training Steps",
       "type": "stat",
-      "gridPos": { "x": 12, "y": 1, "w": 4, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr": "training_steps_total{session_id=~\"$session_id\"}",
+          "expr": "watcher_total_steps{session_id=~\"$session_id\"}",
           "legendFormat": "steps"
         }
       ],
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" },
       "fieldConfig": {
         "defaults": {
+          "unit": "short",
+          "noValue": "0",
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          },
-          "unit": "short"
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
         }
-      },
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value" }
-    },
-
-    {
-      "id": 4,
-      "title": "Epoch Progress",
-      "type": "stat",
-      "gridPos": { "x": 16, "y": 1, "w": 4, "h": 4 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
-      "targets": [
-        {
-          "expr":    "{service=\"watcher\", event=\"watcher.epoch_boundary_reached\", session_id=~\"$session_id\"} | json | unwrap epoch",
-          "legendFormat": "epoch"
-        }
-      ],
-      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
+      }
     },
 
     {
       "id": 5,
       "title": "Packet Queue Size",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 5, "w": 8, "h": 4 },
+      "description": "A value of 0 indicates that there is no queue backlog and the processing is timely.",
+      "gridPos": { "x": 18, "y": 1, "w": 6, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "watcher_packet_queue_size{session_id=~\"$session_id\"}",
+          "expr": "watcher_packet_queue_size{session_id=~\"$session_id\"}",
           "legendFormat": "queue depth"
         }
       ],
@@ -133,6 +124,31 @@
     },
 
     {
+      "id": 6,
+      "title": "Epoch Duration (p50 / p95)",
+      "type": "timeseries",
+      "description": "The training time for each epoch and the time used for performance overhead assessment",
+      "gridPos": { "x": 12, "y": 5, "w": 12, "h": 4 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.50, rate(watcher_epoch_duration_ms_bucket{session_id=~\"$session_id\"}[5m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(watcher_epoch_duration_ms_bucket{session_id=~\"$session_id\"}[5m]))",
+          "legendFormat": "p95"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "lineWidth": 2 }
+        }
+      }
+    },
+
+    {
       "id": 10,
       "type": "row",
       "title": "Blockchain Anchoring",
@@ -141,29 +157,14 @@
     },
 
     {
-      "id": 11,
-      "title": "TX Anchoring Events",
-      "type": "logs",
-      "gridPos": { "x": 0, "y": 10, "w": 14, "h": 8 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
-      "targets": [
-        {
-          "expr": "{service=\"audit-controller\", event=\"packet.anchored\", session_id=~\"$session_id\"}",
-          "maxLines": 100
-        }
-      ],
-      "options": { "showTime": true, "wrapLogMessage": false, "sortOrder": "Descending" }
-    },
-
-    {
       "id": 12,
       "title": "Blockchain Anchor Failures",
       "type": "stat",
-      "gridPos": { "x": 14, "y": 10, "w": 5, "h": 4 },
+      "gridPos": { "x": 0, "y": 10, "w": 6, "h": 4 },
       "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
       "targets": [
         {
-          "expr":    "count_over_time({service=\"audit-controller\", event=\"packet.anchor_failed\"}[$__range])",
+          "expr": "sum(count_over_time({service=\"audit-controller\", event=\"packet.anchor_failed\", session_id=~\"$session_id\"}[$__range]) or vector(0))",
           "legendFormat": "failures"
         }
       ],
@@ -177,7 +178,8 @@
               { "color": "red",    "value": 5 }
             ]
           },
-          "unit": "short"
+          "unit": "short",
+          "noValue": "0"
         }
       },
       "options": { "reduceOptions": { "calcs": ["sum"] }, "textMode": "value_and_name" }
@@ -185,26 +187,70 @@
 
     {
       "id": 13,
-      "title": "Blockchain TX Latency (Jaeger)",
-      "type": "table",
-      "gridPos": { "x": 14, "y": 14, "w": 10, "h": 5 },
-      "datasource": { "type": "jaeger", "uid": "${DS_JAEGER}" },
+      "title": "Blockchain TX Latency (p50 / p95)",
+      "type": "timeseries",
+      "description": "Distribution of delays in blockchain transaction confirmation",
+      "gridPos": { "x": 6, "y": 10, "w": 12, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "queryType": "search",
-          "service":   "watcher",
-          "operation": "blockchain.sendTx",
-          "limit":     20
+          "expr": "histogram_quantile(0.50, rate(blockchain_tx_duration_ms_bucket[2m]))",
+          "legendFormat": "p50"
+        },
+        {
+          "expr": "histogram_quantile(0.95, rate(blockchain_tx_duration_ms_bucket[2m]))",
+          "legendFormat": "p95"
         }
       ],
-      "options": { "frameIndex": 0 }
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 3000 },
+              { "color": "red",    "value": 8000 }
+            ]
+          }
+        }
+      }
+    },
+
+    {
+      "id": 14,
+      "title": "Gas Consumed per Method",
+      "type": "timeseries",
+      "description": "The gas consumption trends of each contract method, used for storing scalability assessment",
+      "gridPos": { "x": 18, "y": 10, "w": 6, "h": 8 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "rate(blockchain_gas_used_total{method=\"syncProgress\"}[2m])",
+          "legendFormat": "syncProgress"
+        },
+        {
+          "expr": "rate(blockchain_gas_used_total{method=\"startSession\"}[2m])",
+          "legendFormat": "startSession"
+        },
+        {
+          "expr": "rate(blockchain_gas_used_total{method=\"completeSession\"}[2m])",
+          "legendFormat": "completeSession"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "lineWidth": 2 }
+        }
+      }
     },
 
     {
       "id": 20,
       "type": "row",
       "title": "System Latency",
-      "gridPos": { "x": 0, "y": 19, "w": 24, "h": 1 },
+      "gridPos": { "x": 0, "y": 18, "w": 24, "h": 1 },
       "collapsed": false
     },
 
@@ -212,15 +258,15 @@
       "id": 21,
       "title": "IPFS Upload Latency (p50 / p95)",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 20, "w": 12, "h": 7 },
+      "gridPos": { "x": 0, "y": 19, "w": 8, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "histogram_quantile(0.50, rate(watcher_blob_upload_duration_ms_bucket[2m]))",
+          "expr": "histogram_quantile(0.50, rate(watcher_blob_upload_duration_ms_bucket[2m]))",
           "legendFormat": "p50"
         },
         {
-          "expr":         "histogram_quantile(0.95, rate(watcher_blob_upload_duration_ms_bucket[2m]))",
+          "expr": "histogram_quantile(0.95, rate(watcher_blob_upload_duration_ms_bucket[2m]))",
           "legendFormat": "p95"
         }
       ],
@@ -233,15 +279,15 @@
       "id": 22,
       "title": "Packet Dispatch Latency (p50 / p95)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 20, "w": 12, "h": 7 },
+      "gridPos": { "x": 8, "y": 19, "w": 8, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "histogram_quantile(0.50, rate(watcher_dispatch_duration_ms_bucket[2m]))",
+          "expr": "histogram_quantile(0.50, rate(watcher_dispatch_duration_ms_bucket[2m]))",
           "legendFormat": "p50"
         },
         {
-          "expr":         "histogram_quantile(0.95, rate(watcher_dispatch_duration_ms_bucket[2m]))",
+          "expr": "histogram_quantile(0.95, rate(watcher_dispatch_duration_ms_bucket[2m]))",
           "legendFormat": "p95"
         }
       ],
@@ -251,10 +297,31 @@
     },
 
     {
+      "id": 29,
+      "title": "IPFS Total Bytes Uploaded",
+      "type": "timeseries",
+      "description": "The cumulative upload byte count trend of IPFS shows an increasing trend and is expected to grow linearly.",
+      "gridPos": { "x": 16, "y": 19, "w": 8, "h": 7 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "watcher_ipfs_bytes_uploaded_total{session_id=~\"$session_id\"}",
+          "legendFormat": "bytes uploaded"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 }
+        }
+      }
+    },
+
+    {
       "id": 23,
       "type": "row",
       "title": "Audit Controller Health",
-      "gridPos": { "x": 0, "y": 27, "w": 24, "h": 1 },
+      "gridPos": { "x": 0, "y": 26, "w": 24, "h": 1 },
       "collapsed": false
     },
 
@@ -262,15 +329,15 @@
       "id": 24,
       "title": "HTTP Request Latency (p50 / p95)",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 28, "w": 12, "h": 7 },
+      "gridPos": { "x": 0, "y": 27, "w": 8, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "histogram_quantile(0.50, rate(http_server_duration_milliseconds_bucket[2m]))",
+          "expr": "histogram_quantile(0.50, rate(http_server_duration_milliseconds_bucket[2m]))",
           "legendFormat": "p50"
         },
         {
-          "expr":         "histogram_quantile(0.95, rate(http_server_duration_milliseconds_bucket[2m]))",
+          "expr": "histogram_quantile(0.95, rate(http_server_duration_milliseconds_bucket[2m]))",
           "legendFormat": "p95"
         }
       ],
@@ -291,18 +358,18 @@
 
     {
       "id": 25,
-      "title": "Node.js Event Loop Delay p99",
+      "title": "Node.js Event Loop Delay (p50 / p99)",
       "type": "timeseries",
-      "gridPos": { "x": 12, "y": 28, "w": 12, "h": 7 },
+      "gridPos": { "x": 8, "y": 27, "w": 8, "h": 7 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "nodejs_eventloop_delay_p99_seconds * 1000",
-          "legendFormat": "p99 delay"
+          "expr": "nodejs_eventloop_delay_p99_seconds * 1000",
+          "legendFormat": "p99"
         },
         {
-          "expr":         "nodejs_eventloop_delay_p50_seconds * 1000",
-          "legendFormat": "p50 delay"
+          "expr": "nodejs_eventloop_delay_p50_seconds * 1000",
+          "legendFormat": "p50"
         }
       ],
       "fieldConfig": {
@@ -324,11 +391,11 @@
       "id": 26,
       "title": "OTel Span Queue Size",
       "type": "timeseries",
-      "gridPos": { "x": 0, "y": 35, "w": 8, "h": 5 },
+      "gridPos": { "x": 16, "y": 27, "w": 8, "h": 4 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "otel_sdk_processor_span_queue_size",
+          "expr": "otel_sdk_processor_span_queue_size",
           "legendFormat": "span queue"
         }
       ],
@@ -351,11 +418,11 @@
       "id": 27,
       "title": "OTel Spans Processed Total",
       "type": "stat",
-      "gridPos": { "x": 8, "y": 35, "w": 8, "h": 5 },
+      "gridPos": { "x": 16, "y": 31, "w": 4, "h": 3 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "otel_sdk_processor_span_processed_total",
+          "expr": "otel_sdk_processor_span_processed_total",
           "legendFormat": "spans"
         }
       ],
@@ -363,11 +430,7 @@
         "defaults": {
           "unit": "short",
           "color": { "mode": "thresholds" },
-          "thresholds": {
-            "steps": [
-              { "color": "green", "value": null }
-            ]
-          }
+          "thresholds": { "steps": [{ "color": "green", "value": null }] }
         }
       },
       "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "textMode": "value_and_name" }
@@ -377,15 +440,15 @@
       "id": 28,
       "title": "V8 Heap Used",
       "type": "timeseries",
-      "gridPos": { "x": 16, "y": 35, "w": 8, "h": 5 },
+      "gridPos": { "x": 20, "y": 31, "w": 4, "h": 3 },
       "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
       "targets": [
         {
-          "expr":         "v8js_memory_heap_used_bytes",
+          "expr": "v8js_memory_heap_used_bytes",
           "legendFormat": "heap used"
         },
         {
-          "expr":         "v8js_memory_heap_limit_bytes",
+          "expr": "v8js_memory_heap_limit_bytes",
           "legendFormat": "heap limit"
         }
       ],
@@ -398,41 +461,117 @@
     },
 
     {
-      "id": 30,
+      "id": 40,
       "type": "row",
-      "title": "Logs",
-      "gridPos": { "x": 0, "y": 40, "w": 24, "h": 1 },
+      "title": "Audit Verification & Atomic Consistency",
+      "gridPos": { "x": 0, "y": 34, "w": 24, "h": 1 },
       "collapsed": false
     },
 
     {
-      "id": 31,
-      "title": "Watcher Events",
-      "type": "logs",
-      "gridPos": { "x": 0, "y": 41, "w": 12, "h": 8 },
-      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
-      "targets": [
-        {
-          "expr": "{service=\"watcher\", session_id=~\"$session_id\"}",
-          "maxLines": 100
-        }
-      ],
-      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" }
+      "id": 41,
+      "title": "Interactive Audit Verification",
+      "type": "text",
+      "gridPos": { "x": 0, "y": 35, "w": 14, "h": 14 },
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"padding:16px;font-family:monospace\">\n  <h4 style=\"margin-bottom:12px;color:#cdd6f4\">Audit Verification</h4>\n  <div style=\"margin-bottom:8px\">\n    <label style=\"color:#a6adc8\">Session ID：</label><br/>\n    <input id=\"sid\" type=\"text\" placeholder=\"session-xxxxx\"\n      style=\"width:100%;margin-top:4px;padding:6px 8px;border:1px solid #555;\n             background:#1e1e2e;color:#cdd6f4;border-radius:4px;box-sizing:border-box\"/>\n  </div>\n  <div style=\"margin-bottom:12px;display:flex;gap:8px;flex-wrap:wrap\">\n    <button onclick=\"verify('session')\"\n      style=\"padding:6px 14px;background:#4e9af1;color:#fff;border:none;border-radius:4px;cursor:pointer\">\n      Verify Session</button>\n    <button onclick=\"verify('dataset')\"\n      style=\"padding:6px 14px;background:#4e9af1;color:#fff;border:none;border-radius:4px;cursor:pointer\">\n      Verify Dataset</button>\n    <button onclick=\"verify('model')\"\n      style=\"padding:6px 14px;background:#4e9af1;color:#fff;border:none;border-radius:4px;cursor:pointer\">\n      Verify Model</button>\n      <button onclick=\"verify('checkpoint')\"\n      style=\"padding:6px 14px;background:#4e9af1;color:#fff;border:none;border-radius:4px;cursor:pointer\">\n      Verify Checkpoint</button>\n  </div>\n  <div id=\"status\" style=\"margin-bottom:8px;font-size:13px;min-height:20px\"></div>\n  <pre id=\"result\"\n    style=\"background:#181825;color:#cdd6f4;padding:12px;border-radius:6px;\n           min-height:80px;white-space:pre-wrap;word-break:break-all;\n           font-size:12px;border:1px solid #313244;max-height:200px;overflow-y:auto\">\nThe result will be displayed here...\n  </pre>\n</div>\n<script>\nasync function verify(type) {\n  const sid = document.getElementById('sid').value.trim();\n  if (!sid) {\n    document.getElementById('status').style.color = '#f38ba8';\n    document.getElementById('status').innerText = '⚠ 请输入 Session ID';\n    return;\n  }\n  const urlMap = {\n    session: 'http://localhost:3000/audit/verify/session/' + sid,\n    dataset: 'http://localhost:3000/audit/verify/session/' + sid + '/dataset',\n    model:   'http://localhost:3000/audit/verify/session/' + sid + '/model',\n  checkpoint: 'http://localhost:3000/audit/verify/session/' + sid + '/epoch/1/checkpoint'\n};\n  document.getElementById('status').style.color = '#89b4fa';\n  document.getElementById('status').innerText = '⏳ Verifying ' + type + '...';\n  document.getElementById('result').innerText = '';\n  const start = Date.now();\n  try {\n    const res = await fetch(urlMap[type]);\n    const elapsed = Date.now() - start;\n    const data = await res.json();\n    const isValid = data.isValid ?? data.is_valid ?? false;\n    document.getElementById('status').style.color = isValid ? '#a6e3a1' : '#f38ba8';\n    document.getElementById('status').innerText =\n      (isValid ? '✅ PASSED' : '❌ FAILED') + '  (' + elapsed + 'ms)';\n    document.getElementById('result').innerText = JSON.stringify(data, null, 2);\n  } catch(e) {\n    document.getElementById('status').style.color = '#f38ba8';\n    document.getElementById('status').innerText = '❌ Request Failed: ' + e.message;\n    document.getElementById('result').innerText = e.toString();\n  }\n}\n</script>"
+      }
     },
 
     {
-      "id": 32,
-      "title": "Audit Controller Errors",
-      "type": "logs",
-      "gridPos": { "x": 12, "y": 41, "w": 12, "h": 8 },
+      "id": 42,
+      "title": "Orphan TX Recovered",
+      "type": "stat",
+      "gridPos": { "x": 14, "y": 35, "w": 5, "h": 5 },
       "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
       "targets": [
         {
-          "expr": "{service=\"audit-controller\"} | json | level=\"error\"",
-          "maxLines": 100
+          "expr": "sum(count_over_time({service=\"audit-controller\", event=\"orphan_tx.recovered\"}[$__range]) or vector(0))",
+          "legendFormat": "recovered"
         }
       ],
-      "options": { "showTime": true, "wrapLogMessage": true, "sortOrder": "Descending" }
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": { "steps": [{ "color": "green", "value": null }] },
+          "unit": "short",
+          "noValue": "0"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "textMode": "value_and_name" }
+    },
+
+    {
+      "id": 43,
+      "title": "Orphan TX Still Pending",
+      "type": "stat",
+      "gridPos": { "x": 19, "y": 35, "w": 5, "h": 5 },
+      "datasource": { "type": "loki", "uid": "${DS_LOKI}" },
+      "targets": [
+        {
+          "expr": "sum(count_over_time({service=\"audit-controller\", event=\"orphan_tx.still_pending\"}[$__range]) or vector(0))",
+          "legendFormat": "pending"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "color": { "mode": "thresholds" },
+          "thresholds": {
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red",   "value": 1 }
+            ]
+          },
+          "unit": "short",
+          "noValue": "0"
+        }
+      },
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "textMode": "value_and_name" }
+    },
+
+    {
+      "id": 44,
+      "title": "Verification Response Time p95 (by type)",
+      "type": "timeseries",
+      "description": "The p95 delay for each verification type, as per the assessment criteria, should be less than 2000ms.",
+      "gridPos": { "x": 14, "y": 45, "w": 10, "h": 9 },
+      "datasource": { "type": "prometheus", "uid": "${DS_PROMETHEUS}" },
+      "targets": [
+        {
+          "expr": "histogram_quantile(0.95, sum by (verify_type, le) (rate(audit_verify_duration_ms_bucket{verify_type=\"session\"}[5m])))",
+          "legendFormat": "session"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (verify_type, le) (rate(audit_verify_duration_ms_bucket{verify_type=\"dataset\"}[5m])))",
+          "legendFormat": "dataset"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (verify_type, le) (rate(audit_verify_duration_ms_bucket{verify_type=\"model\"}[5m])))",
+          "legendFormat": "model"
+        },
+        {
+          "expr": "histogram_quantile(0.95, sum by (verify_type, le) (rate(audit_verify_duration_ms_bucket{verify_type=\"checkpoint\"}[5m])))",
+          "legendFormat": "checkpoint"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "custom": { "lineWidth": 2, "fillOpacity": 10 },
+          "thresholds": {
+            "steps": [
+              { "color": "green",  "value": null },
+              { "color": "yellow", "value": 1000 },
+              { "color": "red",    "value": 2000 }
+            ]
+          }
+        }
+      },
+      "options": {
+        "tooltip": { "mode": "multi" },
+        "legend": { "displayMode": "list", "placement": "bottom" }
+      }
     }
 
   ]

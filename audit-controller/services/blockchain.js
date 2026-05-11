@@ -2,10 +2,11 @@ import { ethers } from 'ethers'
 import * as dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
-import { trace, SpanStatusCode } from '@opentelemetry/api'
+import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
 import { getLogger } from '../tools/instrumentation.js'
 
 const tracer = trace.getTracer('blockchain')
+const meter = metrics.getMeter('blockchain')
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = path.dirname(__filename)
@@ -32,6 +33,14 @@ let contract = null
 let txQueue = Promise.resolve()
 let currentNonce = null
 
+const gasCounter = meter.createCounter('blockchain.gas_used_total', {
+  description: 'Total gas consumed by blockchain transactions'
+})
+
+const txLatencyHistogram = meter.createHistogram('blockchain.tx_duration_ms', {
+  description: 'Blockchain transaction confirmation latency'
+})
+
 const sendWithLock = (fn) => {
   const result = txQueue.then(() => fn())
   txQueue = result.catch(() => {})
@@ -41,6 +50,7 @@ const sendWithLock = (fn) => {
 const sendTx = async (fn) => {
   return sendWithLock(async () => {
     return tracer.startActiveSpan('blockchain.sendTx', async (span) => {
+      const txStart = Date.now()
       try {
         if (currentNonce === null) {
           currentNonce = await provider.getTransactionCount(wallet.address, 'latest')
@@ -48,7 +58,11 @@ const sendTx = async (fn) => {
         const nonce = currentNonce
         const result = await fn(nonce)
         currentNonce++
+
+        const txDuration = Date.now() - txStart
+        txLatencyHistogram.record(txDuration)
         span.setStatus({ code: SpanStatusCode.OK })
+
         return result
       } catch (err) {
         currentNonce = null
@@ -97,7 +111,9 @@ export const startSession = async (sessionId, merkleRootHex) => {
       return await sendTx(async (nonce) => {
         const tx = await contract.startSession(sid, mr, { nonce })
         const receipt = await tx.wait()
-        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        const gasUsed = Number(receipt.gasUsed ?? 0)
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce, 'tx.gas_used': gasUsed })
+        gasCounter.add(gasUsed, { method: 'startSession', session_id: sessionId })
         return receipt.hash
       })
     } catch (err) {
@@ -119,7 +135,9 @@ export const syncProgress = async (sessionId, lastPacketHashHex, stepId) => {
       return await sendTx(async (nonce) => {
         const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
         const receipt = await tx.wait()
-        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        const gasUsed = Number(receipt.gasUsed ?? 0)
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce, 'tx.gas_used': gasUsed })
+        gasCounter.add(gasUsed, { method: 'syncProgress', session_id: sessionId })
         return receipt.hash
       })
     } catch (err) {
@@ -141,7 +159,9 @@ export const completeSession = async (sessionId, finalPacketHashHex) => {
       return sendTx(async (nonce) => {
         const tx = await contract.completeSession(sid, fh, { nonce })
         const receipt = await tx.wait()
-        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce })
+        const gasUsed = Number(receipt.gasUsed ?? 0)
+        span.setAttributes({ 'tx.hash': receipt.hash, 'tx.nonce': nonce, 'tx.gas_used': gasUsed })
+        gasCounter.add(gasUsed, { method: 'completeSession', session_id: sessionId })
         return receipt.hash
       })
     } catch (err) {

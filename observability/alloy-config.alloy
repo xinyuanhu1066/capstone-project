@@ -53,8 +53,9 @@ loki.process "audit_controller_pipeline" {
   // (keep label cardinality low — only stable, low-cardinality fields)
   stage.labels {
     values = {
-      level   = "",
-      event   = "",
+      level      = "",
+      event      = "",
+      session_id = "",  // stream label → enables label_values() in Grafana variable
     }
   }
 
@@ -62,10 +63,9 @@ loki.process "audit_controller_pipeline" {
   // (enables "jump to trace" in Grafana → Jaeger)
   stage.structured_metadata {
     values = {
-      traceID    = "trace_id",
-      spanID     = "span_id",
-      session_id = "session_id",
-      tx_hash    = "tx_hash",
+      traceID = "trace_id",
+      spanID  = "span_id",
+      tx_hash = "tx_hash",
     }
   }
 
@@ -97,17 +97,17 @@ loki.process "watcher_pipeline" {
   // Set labels from extracted fields (empty values are ignored by Loki)
   stage.labels {
     values = {
-      level   = "",
-      event   = "",
+      level      = "",
+      event      = "",
+      session_id = "",  // stream label → enables label_values() in Grafana variable
     }
   }
 
   // Promote trace context only when present (JSON lines)
   stage.structured_metadata {
     values = {
-      traceID    = "trace_id",
-      spanID     = "span_id",
-      session_id = "session_id",
+      traceID = "trace_id",
+      spanID  = "span_id",
     }
   }
 
