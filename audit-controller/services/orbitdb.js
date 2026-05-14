@@ -38,6 +38,21 @@ const Libp2pOptions = {
   }
 }
 
+const watchOrphanLog = (db) => {
+  const ORPHAN_LOG = './orphan-txs.log'
+
+  let debounceTimer = null
+
+  fs.watch(ORPHAN_LOG, (eventType) => {
+    if (eventType !== 'change') return
+    clearTimeout(debounceTimer)
+    debounceTimer = setTimeout(async () => {
+      console.log('[OrbitDB] Orphan log changed, triggering recovery...')
+      await recoverOrphanTxs(db)
+    }, 2000)
+  })
+}
+
 export const initOrbitDB = async () => {
   if (orbitdb) return { orbitdb, db }
 
@@ -116,6 +131,7 @@ export const initOrbitDB = async () => {
   const entries = await db.all()
   console.log(`[OrbitDB] Online. Address: ${db.address} | Entries: ${entries.length}`)
   await recoverOrphanTxs(db)
+  watchOrphanLog(db)
   return { orbitdb, db }
 }
 

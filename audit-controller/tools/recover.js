@@ -62,6 +62,6 @@ export const recoverOrphanTxs = async (db) => {
     )
     log.warn({ event: 'orphan_tx.still_pending', count: failed.length })
   } else {
-    fs.unlinkSync(ORPHAN_LOG)
+    fs.writeFileSync(ORPHAN_LOG, '')
   }
 }
