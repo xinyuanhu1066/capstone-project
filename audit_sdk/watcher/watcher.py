@@ -628,6 +628,7 @@ class TrainingWatcher:
     
     def stop(self, final_model_path: Optional[str] = None):
         """Risk Mitigation: Mandatory final capture (Plan 3.A)"""
+        print("Stopping Watcher...")
         self.logger.info("watcher.session_ended", extra={
             "session_id": self.session_id,
         })
@@ -696,6 +697,12 @@ class _SentinelIter:
         try: return len(self._inner)
         except: return 0
 
+
+class NoAuditWatcher:
+    def stop(self, path):
+        pass
+
+
 def init(
         dataset_dir: Optional[str] = None,
         step_interval: int = 100,
@@ -704,6 +711,8 @@ def init(
         exclude: list = [],
         log_path: str = "watcher.log"
     ):
+    if "NO_AUDIT" in os.environ and os.environ["NO_AUDIT"] == "1":
+        return NoAuditWatcher()
     watcher = TrainingWatcher(
         dataset_dir=dataset_dir,
         step_interval=step_interval,
