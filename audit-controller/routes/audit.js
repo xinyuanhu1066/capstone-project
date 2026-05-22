@@ -27,6 +27,31 @@ const verifyDurationHistogram = meter.createHistogram('audit_verify_duration_ms'
   description: 'Verification endpoint response time'
 })
 
+const packetIngestCounter = meter.createCounter('audit_packet_ingested_total', {
+  description: 'Total audit packets received by controller'
+})
+
+const packetE2eHistogram = meter.createHistogram('audit_packet_e2e_duration_ms', {
+  description: 'End-to-end latency from packet receipt to OrbitDB write complete'
+})
+
+const tamperDetectionCounter = meter.createCounter('audit_tamper_detection_total', {
+  description: 'Tamper detection outcomes across all verify endpoints'
+})
+
+const orbitdbWriteCounter = meter.createCounter('audit_orbitdb_writes_total', {
+  description: 'Total records written to OrbitDB'
+})
+
+const orphanTxCounter = meter.createCounter('audit_orphan_tx_total', {
+  description: 'On-chain anchored packets that failed OrbitDB write (compensation required)'
+})
+
+const orbitdbCumulativeSizeGauge = meter.createGauge('audit_orbitdb_cumulative_entries', {
+  description: 'Total OrbitDB entries at each epoch boundary'
+})
+
+
 const recordVerifyDuration = (startTime, verifyType, isValid) => {
   verifyDurationHistogram.record(Date.now() - startTime, {
     verify_type: verifyType,
@@ -181,6 +206,7 @@ router.post('/dataset/directory', async (req, res) => {
 
 // POST /audit/packet - Receive and store audit packet
 router.post('/packet', async (req, res) => {
+  const e2eStart = Date.now()
   return tracer.startActiveSpan('audit.packet.store', async (span) => {
     const log = getLogger()
     const { packet, packet_hash } = req.body
@@ -189,7 +215,7 @@ router.post('/packet', async (req, res) => {
       'packet.action': packet.action ?? '',
       'session.id': packet.session_id,
     })
-
+    packetIngestCounter.add(1, { packet_type: packet.type, session_id: packet.session_id })
 
     // 1. Anchor the packet on blockchain
     let txHash = 'N/A'
@@ -240,6 +266,16 @@ router.post('/packet', async (req, res) => {
       await db.put(auditEntry)
       log.info({ event: 'packet.stored', entry_id: entryId, session_id: packet.session_id })
       span.end()
+
+      orbitdbWriteCounter.add(1, { packet_type: packet.type })
+      packetE2eHistogram.record(Date.now() - e2eStart, { packet_type: packet.type, session_id: packet.session_id })
+      
+      const sessionEntries = db.all().filter(e => 
+        e.value.packet?.session_id === packet.session_id
+      )
+      orbitdbCumulativeSizeGauge.set(sessionEntries.length, { 
+        session_id: packet.session_id 
+      })
       return res.status(201).json({ status: 'success', tx_hash: txHash })
     } catch (dbError) {
       fs.appendFileSync('./orphan-txs.log', 
@@ -250,6 +286,7 @@ router.post('/packet', async (req, res) => {
           timestamp: Date.now()
         }) + '\n'
       )
+      orphanTxCounter.add(1, { packet_type: packet.type, session_id: packet.session_id })
       span.recordException(dbError)
       log.error({ event: 'packet.orbitdb_write_failed', session_id: packet.session_id, tx_hash: txHash })
       span.end()
@@ -312,6 +349,10 @@ router.get('/verify/session/:id', async (req, res) => {
       log.info({ event: 'session.verified', session_id: sessionId, result: isValid })
 
       recordVerifyDuration(start, 'session', isValid)
+      tamperDetectionCounter.add(1, {
+        verify_type: 'session',
+        result: isValid ? 'passed' : 'tampered'
+      })
 
       res.status(200).json({
         sessionStartValidity: sessionStartValidity,
@@ -383,6 +424,10 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'dataset.verified', session_id: sessionId, result: isValid })
       recordVerifyDuration(start, 'dataset', isValid)
+      tamperDetectionCounter.add(1, {
+        verify_type: 'dataset',
+        result: isValid ? 'passed' : 'tampered'
+      })
 
       res.json({
         is_valid: isValid,
@@ -442,6 +487,10 @@ router.get('/verify/session/:sessionId/model', async (req, res) => {
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'model.verified', session_id: sessionId, result: isValid })
       recordVerifyDuration(start, 'model', isValid)
+      tamperDetectionCounter.add(1, {
+        verify_type: 'model',
+        result: isValid ? 'passed' : 'tampered'
+      })
 
       res.json({
         is_valid: isValid,
@@ -499,6 +548,10 @@ router.get('/verify/session/:sessionId/epoch/:epochId/checkpoint', async (req, r
       span.setAttributes({ 'verify.result': isValid })
       log.info({ event: 'checkpoint.verified', session_id: sessionId, epoch_id: epochId, result: isValid })
       recordVerifyDuration(start, 'checkpoint', isValid)
+      tamperDetectionCounter.add(1, {
+        verify_type: 'checkpoint',
+        result: isValid ? 'passed' : 'tampered'
+      })
 
       res.json({
         is_valid: isValid,
@@ -658,6 +711,83 @@ router.get('/sessions/:sessionId', async (req, res) => {
     log.error({ event: 'session.fetch_failed', session_id: req.params.sessionId })
     res.status(500).json({ error: error.message })
   }
+})
+
+// GET /audit/session/:sessionId/coverage
+router.get('/session/:sessionId/coverage', async (req, res) => {
+  return tracer.startActiveSpan('audit.session.coverage', async (span) => {
+    const log = getLogger()
+    const { sessionId } = req.params
+    span.setAttributes({ 'session.id': sessionId })
+
+    try {
+      const db = getDB()
+      if (!db) return res.status(503).json({ error: 'Database not initialized' })
+
+      const entries = await db.all()
+
+      const startPacket = entries.find(e =>
+        !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
+        e.value.packet.session_id === sessionId &&
+        e.value.packet.type === 'session' &&
+        e.value.packet.action === 'start'
+      )
+      if (!startPacket) {
+        return res.status(404).json({ error: 'Session start packet not found' })
+      }
+
+      const { epochs, batch_size } = startPacket.value.packet.payload.hyperparams
+      const sessionPackets = entries.filter(e =>
+        !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
+        e.value.packet.session_id === sessionId
+      )
+
+      const capturedStepPackets = sessionPackets.filter(e =>
+        e.value.packet.type === 'step'
+      )
+      const capturedEpochPackets = sessionPackets.filter(e =>
+        e.value.packet.type === 'epoch'
+      )
+
+      const maxStepId = capturedStepPackets.reduce((max, e) =>
+        Math.max(max, e.value.packet.payload.id), 0
+      )
+      const theoreticalStepCaptures = maxStepId > 0
+        ? Math.floor(maxStepId / startPacket.value.packet.payload.hyperparams.step_interval ?? 100)
+        : 0
+
+      const stepCoverage = theoreticalStepCaptures > 0
+        ? capturedStepPackets.length / theoreticalStepCaptures
+        : null
+
+      const epochCoverage = epochs > 0
+        ? capturedEpochPackets.length / epochs
+        : null
+
+      const result = {
+        session_id: sessionId,
+        captured_step_packets: capturedStepPackets.length,
+        captured_epoch_packets: capturedEpochPackets.length,
+        theoretical_epoch_count: epochs,
+        theoretical_step_captures: theoreticalStepCaptures,
+        step_coverage_ratio: stepCoverage,
+        epoch_coverage_ratio: epochCoverage
+      }
+
+      span.setAttributes({
+        'coverage.step_ratio': stepCoverage ?? -1,
+        'coverage.epoch_ratio': epochCoverage ?? -1
+      })
+      log.info({ event: 'session.coverage.calculated', session_id: sessionId, ...result })
+      res.json(result)
+    } catch (error) {
+      span.recordException(error)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      res.status(500).json({ error: error.message })
+    } finally {
+      span.end()
+    }
+  })
 })
 
 export default router
