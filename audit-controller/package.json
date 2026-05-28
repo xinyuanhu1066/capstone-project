@@ -35,7 +35,10 @@
     "pino": "^10.3.1"
   },
   "devDependencies": {
-    "patch-package": "^8.0.1"
+    "@jest/globals": "^30.4.1",
+    "jest": "^30.4.2",
+    "patch-package": "^8.0.1",
+    "supertest": "^7.2.2"
   },
   "overrides": {
     "multiformats": "13.4.2"
