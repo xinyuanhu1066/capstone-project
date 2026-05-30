@@ -1,3 +1,5 @@
+import { jest } from '@jest/globals'
+
 /**
  * Returns Jest mock implementations for every blockchain function
  * imported by audit.js.  Call resetBlockchainMocks() between tests.
