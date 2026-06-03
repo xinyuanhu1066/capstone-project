@@ -186,9 +186,9 @@ function App() {
               {/* Red dot */}
               <div style={{
                 width: 36, height: 36, borderRadius: '50%',
-                background: lineageResult && !(lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified')
+                background: lineageResult && !lineageResult.isValid
                   ? '#ef4444' : '#1e1e2e',
-                boxShadow: lineageResult && !(lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified')
+                boxShadow: lineageResult && !lineageResult.isValid
                   ? '0 0 10px #ef4444' : 'none',
                 border: '1px solid #334155',
                 transition: 'all 0.4s',
@@ -204,9 +204,9 @@ function App() {
               {/* Green dot */}
               <div style={{
                 width: 36, height: 36, borderRadius: '50%',
-                background: lineageResult && lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified'
+                background: lineageResult && lineageResult.isValid
                   ? '#22c55e' : '#1e1e2e',
-                boxShadow: lineageResult && lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified'
+                boxShadow: lineageResult && lineageResult.isValid
                   ? '0 0 10px #22c55e' : 'none',
                 border: '1px solid #334155',
                 transition: 'all 0.4s',
@@ -215,12 +215,12 @@ function App() {
             <span style={{
               fontSize: '0.6rem',
               color: !lineageResult ? '#eab308'
-                : (lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified') ? '#22c55e' : '#ef4444',
+                : lineageResult.isValid ? '#22c55e' : '#ef4444',
               textTransform: 'uppercase',
               letterSpacing: '1px',
             }}>
               {!lineageResult ? 'Awaiting Verification'
-                : (lineageResult.sessionStartValidity === 'verified' && lineageResult.sessionEndValidity === 'verified') ? 'Lineage Verified' : 'Integrity Error'}
+                : lineageResult.isValid ? 'Lineage Verified' : 'Integrity Error'}
             </span>
           </div>
 

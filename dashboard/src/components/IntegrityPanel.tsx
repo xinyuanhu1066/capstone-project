@@ -62,6 +62,7 @@ export interface LineageVerifyResult {
   sessionStartValidity: string;
   sessionEndValidity: string;
   stepsValidities: Record<string, string>;
+  isValid: boolean;
 }
 
 interface CheckpointVerifyResult {
