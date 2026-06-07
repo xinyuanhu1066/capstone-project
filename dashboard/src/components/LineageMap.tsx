@@ -8,7 +8,7 @@ import ReactFlow, {
 import 'reactflow/dist/style.css';
 import { type StepContext, type EpochContext } from '../services/api';
 import EpochNode from './EpochNode';
-import { Shield } from 'lucide-react';
+import { Shield, AlertTriangle } from 'lucide-react';
 import { type LineageVerifyResult } from './IntegrityPanel';
 
 // ─── Layout constants ─────────────────────────────────────────────────────────
@@ -42,14 +42,24 @@ export interface StepNodeData {
   posInRow: number;
   /** True when lineage verification returned "OK" for this step */
   isSecured: boolean;
+  isFailed: boolean;
 }
 
 const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, selected }) => {
-  const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow, isSecured } = data;
+  const { isFirstInSeq, isLastInSeq, isRowEnd, isOddRow, posInRow, isSecured, isFailed } = data;
 
+  const borderColor = isFailed ? '#ef4444' : selected ? '#00f2ff' : undefined;
+  const boxShadow   = isFailed ? '0 0 12px rgba(239,68,68,0.4)' : undefined;
+  
   return (
     <div className={`custom-node ${selected ? 'selected-node' : ''}`}
-      style={{ width: STEP_W, cursor: 'pointer' }}>
+      style={{ 
+        width: STEP_W, 
+        cursor: 'pointer',
+        ...(borderColor && { border: `1.5px solid ${borderColor}` }),
+        ...(boxShadow   && { boxShadow }),
+      }}
+    >
       {/* Target: Receive from previous step */}
       <Handle
         id={isOddRow ? "right" : "left"}
@@ -85,9 +95,14 @@ const StepNode: React.FC<{ data: StepNodeData; selected: boolean }> = ({ data, s
 
       <div className="node-header">STEP #{data?.stepId ?? '?'}</div>
       <div className="node-body">
-        {isSecured && (
+        {isSecured && !isFailed && (
           <div style={{ fontSize: '10px', color: '#10b981', display: 'flex', alignItems: 'center', gap: '4px' }}>
             <Shield size={9} /> SECURED
+          </div>
+        )}
+        {isFailed && (
+          <div style={{ fontSize: '10px', color: '#ef4444', display: 'flex', alignItems: 'center', gap: '4px' }}>
+            <AlertTriangle size={9} /> TAMPERED
           </div>
         )}
       </div>
@@ -249,6 +264,38 @@ const LineageMap: React.FC<LineageMapProps> = ({
     return s;
   }, [lineageVerifyResult]);
 
+  const failedSteps = React.useMemo<Set<number>>(() => {
+    if (!lineageVerifyResult?.stepsValidities) return new Set();
+    const s = new Set<number>();
+    Object.entries(lineageVerifyResult.stepsValidities).forEach(([stepId, status]) => {
+      if (status === 'invalid') s.add(Number(stepId));
+    });
+    return s;
+  }, [lineageVerifyResult]);
+
+  const failedEpochs = React.useMemo<Set<number>>(() => {
+    if (!lineageVerifyResult?.stepsValidities || !epochs.length) return new Set();
+    const s = new Set<number>();
+
+    epochs.forEach((ep, i) => {
+      const lo = i === 0 ? 0 : epochs[i - 1].step_id + 1;
+      const hasFailedStep = steps.some(
+        p => p.step_id >= lo && p.step_id <= ep.step_id && failedSteps.has(p.step_id)
+      );
+      if (hasFailedStep) s.add(ep.epoch);
+    });
+    return s;
+  }, [lineageVerifyResult, failedSteps, epochs, steps]);
+
+  useEffect(() => {
+    if (failedEpochs.size === 0) return;
+    setExpandedEpochs(prev => {
+      const next = new Set(prev);
+      failedEpochs.forEach(epoch => next.add(epoch));
+      return next;
+    });
+  }, [failedEpochs]);
+
   useEffect(() => {
     const stepsByEpoch: Record<number, StepContext[]> = {};
     epochs.forEach((ep, i) => {
@@ -272,7 +319,12 @@ const LineageMap: React.FC<LineageMapProps> = ({
           position: { x: sp.x, y: sp.y },
           selected: selectedNode !== null && !('epoch' in selectedNode)
             && (selectedNode as StepNodeData).stepId === p.step_id,
-          data: { stepId: p.step_id, fullData: p, isSecured: securedSteps.has(p.step_id) },
+          data: {
+            stepId: p.step_id, 
+            fullData: p, 
+            isSecured: securedSteps.has(p.step_id),
+            isFailed:  failedSteps.has(p.step_id),
+          },
         });
         if (j === 0) return;
         const prev   = steps[j - 1];
@@ -327,6 +379,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
           onToggleExpand: toggleEpoch, onNodeClick: () => onNodeClick(ep),
           isFirstInSeq: i === 0,
           isLastInSeq: i === epochs.length - 1,
+          isFailed: failedEpochs.has(ep.epoch),
         },
       });
 
@@ -382,6 +435,7 @@ const LineageMap: React.FC<LineageMapProps> = ({
             posInRow:     sp.posInRow,
             // ← driven by lineageVerifyResult from IntegrityPanel
             isSecured:    securedSteps.has(p.step_id),
+            isFailed:     failedSteps.has(p.step_id),
           },
         });
 

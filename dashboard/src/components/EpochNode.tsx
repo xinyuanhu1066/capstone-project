@@ -12,24 +12,32 @@ export interface EpochNodeData {
   childCount: number;
   onToggleExpand: (epoch: number) => void;
   onNodeClick: () => void;
+  isFailed: boolean;
 }
 
 const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data, selected }) => {
-  const { isFirstInSeq, isLastInSeq } = data;
+  const { isFirstInSeq, isLastInSeq, isFailed } = data;
+
+  const borderColor = isFailed
+    ? '#ef4444'
+    : selected ? '#00f2ff' : '#1e293b';
+  const glowShadow = isFailed
+    ? '0 0 16px rgba(239,68,68,0.35)'
+    : selected ? '0 0 16px rgba(0,242,255,0.3)' : '0 4px 12px rgba(0,0,0,0.5)';
 
   return (
     <div
       onClick={() => data.onNodeClick()}
       style={{
         background: '#14161e',
-        border: `1px solid ${selected ? '#00f2ff' : '#1e293b'}`,
+        border: `1px solid ${borderColor}`,
         borderRadius: '4px',
         padding: '10px 12px',
         width: '220px',
         fontFamily: 'var(--font-mono)',
         fontSize: '11px',
         cursor: 'pointer',
-        boxShadow: selected ? '0 0 16px rgba(0,242,255,0.3)' : '0 4px 12px rgba(0,0,0,0.5)',
+        boxShadow: glowShadow,
         transition: 'all 0.2s ease',
         position: 'relative',
       }}
@@ -52,10 +60,14 @@ const EpochNode: React.FC<{ data: EpochNodeData; selected: boolean }> = ({ data,
 
       {/* Header row */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
-        <span style={{ color: '#00f2ff', fontWeight: 700, fontSize: '12px' }}>
+        <span style={{ color: isFailed ? '#ef4444' : '#00f2ff', fontWeight: 700, fontSize: '12px' }}>
           EPOCH {data.epoch}
         </span>
-        
+        {isFailed && (
+          <span style={{ fontSize: '9px', color: '#ef4444', display: 'flex', alignItems: 'center', gap: '3px' }}>
+            TAMPERED STEPS
+          </span>
+        )}
       </div>
 
       <div style={{ borderTop: '1px solid #1e293b', paddingTop: '6px', display: 'flex', flexDirection: 'column', gap: '3px' }}>
