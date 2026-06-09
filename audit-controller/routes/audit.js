@@ -17,6 +17,7 @@ import * as dagPB from '@ipld/dag-pb'
 import { deriveEntryId } from '../tools/strings.js'
 import { getLogger } from '../tools/instrumentation.js'
 import { trace, SpanStatusCode, metrics } from '@opentelemetry/api'
+import { consumeFault } from './debug.js'
 
 const router = express.Router()
 
@@ -263,6 +264,17 @@ router.post('/packet', async (req, res) => {
       }
 
       const db = getDB()
+
+      const fault = consumeFault()
+      if (fault?.target === 'orbitdb_write') {
+        if (fault.fault_type === 'process_crash') {
+          throw new Error('[INJECTED] Simulated process crash before OrbitDB write')
+        } else if (fault.fault_type === 'network_partition') {
+          await new Promise(r => setTimeout(r, 10000))
+          throw new Error('[INJECTED] Simulated network partition: OrbitDB write timeout')
+        }
+      }
+
       await db.put(auditEntry)
       log.info({ event: 'packet.stored', entry_id: entryId, session_id: packet.session_id })
       span.end()

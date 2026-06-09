@@ -3,6 +3,7 @@ import cors from 'cors'
 import { initOrbitDB, closeOrbitDB } from './services/orbitdb.js'
 import { initBlockchain } from './services/blockchain.js'
 import auditRoutes from './routes/audit.js'
+import debugRoutes from './routes/debug.js'
 import * as dotenv from "dotenv";
 import path from "path";
 import { fileURLToPath } from 'url';
@@ -20,6 +21,11 @@ app.use(express.json())
 
 // Routes
 app.use('/audit', auditRoutes)
+
+if (process.env.NODE_ENV !== 'production') {
+  app.use('/debug', debugRoutes)
+  console.log('[Audit Controller] Debug routes enabled')
+}
 
 // Health Check
 app.get('/health', (req, res) => {
