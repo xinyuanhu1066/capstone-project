@@ -40,15 +40,23 @@ const Libp2pOptions = {
 
 const watchOrphanLog = (db) => {
   const ORPHAN_LOG = './orphan-txs.log'
-
   let debounceTimer = null
 
   fs.watch(ORPHAN_LOG, (eventType) => {
     if (eventType !== 'change') return
     clearTimeout(debounceTimer)
     debounceTimer = setTimeout(async () => {
-      console.log('[OrbitDB] Orphan log changed, triggering recovery...')
-      await recoverOrphanTxs(db)
+      try {
+        const content = fs.readFileSync(ORPHAN_LOG, 'utf8').trim()
+        if (!content) {
+          console.log('[OrbitDB] Orphan log is empty, skipping recovery.')
+          return
+        }
+        console.log('[OrbitDB] Orphan log changed, triggering recovery...')
+        await recoverOrphanTxs(db)
+      } catch (err) {
+        console.error('[OrbitDB] Failed to read orphan log:', err)
+      }
     }, 2000)
   })
 }
