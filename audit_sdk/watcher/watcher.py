@@ -148,6 +148,7 @@ class TrainingWatcher:
 
         # Generate a unique session ID for this training run
         self.session_id = f"session-{int(time.time())}-{str(uuid.uuid4())[:8]}"
+        print(f"Start Session: {self.session_id}")
         
         # Dataset Strategy (Plan Section 2.A): Map CID to OrbitDB
         self.dataset_merkle_root = self._calculate_initial_merkle_root()
