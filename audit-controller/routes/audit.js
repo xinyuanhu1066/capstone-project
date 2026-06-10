@@ -1,6 +1,6 @@
 import express from 'express'
 import { getDB, getHelia } from '../services/orbitdb.js'
-import { startSession, syncProgress, completeSession, getSession } from '../services/blockchain.js'
+import { startSession, syncProgressAsync, completeSession, getSession } from '../services/blockchain.js'
 import { unixfs } from '@helia/unixfs'
 import { CID } from 'multiformats/cid'
 import { auditAllPackets } from '../tools/validity.js'
@@ -40,18 +40,9 @@ const tamperDetectionCounter = meter.createCounter('audit_tamper_detection_total
   description: 'Tamper detection outcomes across all verify endpoints'
 })
 
-const orbitdbWriteCounter = meter.createCounter('audit_orbitdb_writes_total', {
-  description: 'Total records written to OrbitDB'
-})
-
 const orphanTxCounter = meter.createCounter('audit_orphan_tx_total', {
   description: 'On-chain anchored packets that failed OrbitDB write (compensation required)'
 })
-
-const orbitdbCumulativeSizeGauge = meter.createGauge('audit_orbitdb_cumulative_entries', {
-  description: 'Total OrbitDB entries at each epoch boundary'
-})
-
 
 const recordVerifyDuration = (startTime, verifyType, isValid) => {
   verifyDurationHistogram.record(Date.now() - startTime, {
@@ -232,7 +223,7 @@ router.post('/packet', async (req, res) => {
       } else {
         // For steps and epochs, we anchor by syncing the latest packet hash to the session
         const stepId = packet.type === 'step' ? packet.payload.id : packet.payload.step_id
-        txHash = await syncProgress(packet.session_id, packet_hash, stepId)
+        txHash = await syncProgressAsync(packet.session_id, packet_hash, stepId)
       }
       span.setAttributes({ 'tx.hash': txHash })
       log.info({ event: 'packet.anchored', session_id: packet.session_id, packet_type: packet.type, tx_hash: txHash })
@@ -279,15 +270,8 @@ router.post('/packet', async (req, res) => {
       log.info({ event: 'packet.stored', entry_id: entryId, session_id: packet.session_id })
       span.end()
 
-      orbitdbWriteCounter.add(1, { packet_type: packet.type })
-      packetE2eHistogram.record(Date.now() - e2eStart, { packet_type: packet.type, session_id: packet.session_id })
-      
-      const sessionEntries = db.all().filter(e => 
-        e.value.packet?.session_id === packet.session_id
-      )
-      orbitdbCumulativeSizeGauge.set(sessionEntries.length, { 
-        session_id: packet.session_id 
-      })
+      packetE2eHistogram.record(Date.now() - e2eStart, { session_id: packet.session_id })
+
       return res.status(201).json({ status: 'success', tx_hash: txHash })
     } catch (dbError) {
       fs.appendFileSync('./orphan-txs.log', 

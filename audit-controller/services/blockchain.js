@@ -150,6 +150,33 @@ export const syncProgress = async (sessionId, lastPacketHashHex, stepId) => {
   })
 }
 
+export const syncProgressAsync = async (sessionId, lastPacketHashHex, stepId) => {
+  return tracer.startActiveSpan('blockchain.syncProgressAsync', async (span) => {
+    try {
+      const sid = sessionIdToBytes32(sessionId)
+      const lh  = toBytes32Hex(lastPacketHashHex)
+      return await sendTx(async (nonce) => {
+        const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
+        tx.wait().then(receipt => {
+          const gasUsed = Number(receipt.gasUsed ?? 0)
+          gasCounter.add(gasUsed, { method: 'syncProgress', session_id: sessionId })
+        }).catch(err => {
+          getLogger().error({ event: 'blockchain.syncProgress.confirm_failed',
+                              error: err.message })
+        })
+        span.setAttributes({ 'tx.hash': tx.hash, 'tx.nonce': nonce })
+        return tx.hash
+      })
+    } catch (err) {
+      span.recordException(err)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      throw err
+    } finally {
+      span.end()
+    }
+  })
+}
+
 export const completeSession = async (sessionId, finalPacketHashHex) => {
   return tracer.startActiveSpan('blockchain.completeSession', async (span) => {
     span.setAttributes({ 'session.id': sessionId, 'session.action': 'end' })
