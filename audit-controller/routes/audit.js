@@ -405,14 +405,33 @@ router.get('/verify/session/:sessionId/dataset', async (req, res) => {
       const helia = getHelia()
       if (!helia) return res.status(503).json({ error: 'Helia not initialized' })
 
+      let downloadFailed = false
+      let downloadError = null
+
       await tracer.startActiveSpan('audit.ipfs.download_directory', async (dlSpan) => {
         dlSpan.setAttributes({ 'dataset.cid': datasetCid })
         try {
           await downloadDirectory(helia, datasetCid, tempDir)
+        } catch (dlError) {
+          downloadFailed = true
+          downloadError = dlError.message
         } finally {
           dlSpan.end()
         }
       })
+
+      if (downloadFailed) {
+        recordVerifyDuration(start, 'dataset', false)
+        tamperDetectionCounter.add(1, { verify_type: 'dataset', result: 'tampered' })
+        return res.json({
+          is_valid: false,
+          details: {
+            reason: 'Dataset download failed — CID may be invalid or content unavailable',
+            dataset_cid: datasetCid,
+            error: downloadError
+          }
+        })
+      }
 
       const calculatedMerkleRoot = calculateDatasetMerkleRoot(tempDir)
       const isValid = verifyHashMatch(calculatedMerkleRoot, anchorMerkleRoot)
@@ -732,7 +751,7 @@ router.get('/session/:sessionId/coverage', async (req, res) => {
         return res.status(404).json({ error: 'Session start packet not found' })
       }
 
-      const { epochs, batch_size } = startPacket.value.packet.payload.hyperparams
+      const { epochs, batch_size, step_interval } = startPacket.value.packet.payload.hyperparams
       const sessionPackets = entries.filter(e =>
         !e.value._id.startsWith('meta-') && !e.value._id.startsWith('ds-') &&
         e.value.packet.session_id === sessionId
@@ -749,7 +768,7 @@ router.get('/session/:sessionId/coverage', async (req, res) => {
         Math.max(max, e.value.packet.payload.id), 0
       )
       const theoreticalStepCaptures = maxStepId > 0
-        ? Math.floor(maxStepId / startPacket.value.packet.payload.hyperparams.step_interval ?? 100)
+        ? Math.floor((maxStepId + step_interval) / step_interval)
         : 0
 
       const stepCoverage = theoreticalStepCaptures > 0
@@ -777,6 +796,7 @@ router.get('/session/:sessionId/coverage', async (req, res) => {
       log.info({ event: 'session.coverage.calculated', session_id: sessionId, ...result })
       res.json(result)
     } catch (error) {
+      console.log(error)
       span.recordException(error)
       span.setStatus({ code: SpanStatusCode.ERROR })
       res.status(500).json({ error: error.message })

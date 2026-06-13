@@ -16,9 +16,11 @@ router.post('/tamper', async (req, res) => {
     try {
       const db = getDB()
       const entry = await db.get(entry_id).catch(() => null)
-      if (!entry) return res.status(404).json({ error: 'Entry not found' })
+      if (!entry) return res.status(404).json({ error: `Entry not found: ${req.params.entry_id}` })
 
-      const tampered = JSON.parse(JSON.stringify(entry))
+      const auditEntry = entry.value
+      const tampered = JSON.parse(JSON.stringify(auditEntry))
+      tampered._id = entry_id
       const randomHex = () => crypto.randomBytes(32).toString('hex')
 
       switch (tamper_type) {
@@ -49,6 +51,38 @@ router.post('/tamper', async (req, res) => {
       span.setAttributes({ 'tamper.entry_id': entry_id, 'tamper.type': tamper_type })
       log.warn({ event: 'debug.tamper', entry_id, tamper_type })
       res.json({ status: 'tampered', entry_id, tamper_type })
+    } catch (err) {
+      span.recordException(err)
+      span.setStatus({ code: SpanStatusCode.ERROR })
+      res.status(500).json({ error: err.message })
+    } finally {
+      span.end()
+    }
+  })
+})
+
+// GET /debug/entry/:entry_id
+router.get('/entry/:entry_id', async (req, res) => {
+  try {
+    const db = getDB()
+    const entry = await db.get(req.params.entry_id).catch(() => null)
+    if (!entry) return res.status(404).json({ error: `Entry not found: ${req.params.entry_id}` })
+    res.json(entry.value)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// POST /debug/restore
+router.post('/restore', async (req, res) => {
+  return tracer.startActiveSpan('debug.restore', async (span) => {
+    const { entry_id, original_entry } = req.body
+    try {
+      const db = getDB()
+      const restored = { ...original_entry, _id: entry_id }
+      await db.put(restored)
+      span.setAttributes({ 'restore.entry_id': entry_id })
+      res.json({ status: 'restored', entry_id })
     } catch (err) {
       span.recordException(err)
       span.setStatus({ code: SpanStatusCode.ERROR })
