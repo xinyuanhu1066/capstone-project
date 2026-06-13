@@ -47,6 +47,22 @@ const sendWithLock = (fn) => {
   return result
 }
 
+const sendWithLockAsync = (fn) => {
+  // Use an external "resolve" to prematurely release the queue
+  let releaseLock
+  const lockReleased = new Promise(resolve => { releaseLock = resolve })
+
+  // The queue waits for the completion of the previous task,
+  // then executes fn. After fn is broadcasted, it calls 
+  // releaseLock to release the lock.
+  const result = txQueue.then(() => fn(releaseLock))
+  // The queue is linked to lockReleased instead of result.
+  // After this broadcast is completed, the queue will be 
+  // unlocked and there is no need to wait for tx.wait()
+  txQueue = lockReleased.catch(() => {})
+  return result
+}
+
 const sendTx = async (fn) => {
   return sendWithLock(async () => {
     return tracer.startActiveSpan('blockchain.sendTx', async (span) => {
@@ -155,19 +171,36 @@ export const syncProgressAsync = async (sessionId, lastPacketHashHex, stepId) =>
     try {
       const sid = sessionIdToBytes32(sessionId)
       const lh  = toBytes32Hex(lastPacketHashHex)
-      return await sendTx(async (nonce) => {
+
+      return await sendWithLockAsync(async (releaseLock) => {
+        if (currentNonce === null) {
+          currentNonce = await provider.getTransactionCount(wallet.address, 'latest')
+        }
+        const nonce = currentNonce
         const tx = await contract.syncProgress(sid, lh, stepId, { nonce })
+        currentNonce++
+
+        // The broadcast is complete. Immediately release the 
+        // queue lock and allow the next transaction to proceed.
+        releaseLock()
+
+        span.setAttributes({ 'tx.hash': tx.hash, 'tx.nonce': nonce })
+
+        // Waiting for confirmation in the background
         tx.wait().then(receipt => {
           const gasUsed = Number(receipt.gasUsed ?? 0)
           gasCounter.add(gasUsed, { method: 'syncProgress', session_id: sessionId })
         }).catch(err => {
           getLogger().error({ event: 'blockchain.syncProgress.confirm_failed',
                               error: err.message })
+          // Reset the nonce when the broadcast fails.
+          currentNonce = null
         })
-        span.setAttributes({ 'tx.hash': tx.hash, 'tx.nonce': nonce })
+
         return tx.hash
       })
     } catch (err) {
+      currentNonce = null
       span.recordException(err)
       span.setStatus({ code: SpanStatusCode.ERROR })
       throw err

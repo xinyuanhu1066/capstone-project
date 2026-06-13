@@ -13,8 +13,8 @@ import audit_sdk.watcher.watcher as audit_sdk
 
 # Hyperparameters
 BATCH_SIZE = 64
-EPOCHS = 50
-STEP_INTERVAL = 50
+EPOCHS = 10
+STEP_INTERVAL = 200
 LEARNING_RATE = 0.01
 MOMENTUM = 0.5
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")

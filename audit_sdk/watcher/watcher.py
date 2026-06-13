@@ -160,6 +160,8 @@ class TrainingWatcher:
         self._loader_sizes: Dict[int, int] = {}
         self._train_loader_id: Optional[int] = None
         self._last_optimizer: Optional[Any] = None
+
+        self._prev_hash: str = ""
         
         self._initialized = True
 
@@ -364,12 +366,14 @@ class TrainingWatcher:
             checkpoint_data = self._capture_full_checkpoint()
             checkpoint_hash = self.hashing_engine.calculate_sha256(checkpoint_data)
 
+            cid = self._upload_blob(checkpoint_data) if checkpoint_data else None
+
             self.buffer.put({
                 "type": "epoch",
                 "epoch_id": epoch,
                 "step_id": self.global_step,
                 "checkpoint_hash": checkpoint_hash,
-                "checkpoint": checkpoint_data
+                "checkpoint_cid": cid
             })
             self.total_steps_gauge.set(
                 self.global_step,
@@ -479,64 +483,79 @@ class TrainingWatcher:
             try:
                 data = self.buffer.get(timeout=1.0)
 
-                # Obtain latest packet hash from controller to link chain (may be empty)
-                prev_hash = self._get_latest_packet_hash(self.session_id)
-
-                if data["type"] == "session":
-                    level = "Session"
-                    if data["action"] == "start":
-                        payload = {
-                            "dataset_name": self.dataset_name,
-                            "dataset_version": self.dataset_version,
-                            "dataset_merkle_root": self.dataset_merkle_root,
-                            "dataset_cid": self.dataset_cid,
-                            "hyperparams": self.hyperparams,
-                        }
-                    elif data["action"] == "end":
-                        payload = {
-                            "model_cid": data["model_cid"],
-                            "model_hash": data["model_hash"],
-                        }
-                    else:
-                        self.buffer.task_done()
-                        continue
-                elif data["type"] == "epoch":
-                    level = f"Epoch {data['epoch_id']}"
-                    cid = None
-                    if data["checkpoint"]:
-                        cid = self._upload_blob(data["checkpoint"])
-                    payload = {
-                        "id": data["epoch_id"],
-                        "step_id": data["step_id"],
-                        "checkpoint_hash": data["checkpoint_hash"],
-                        "checkpoint_cid": cid,
-                    }
-                elif data["type"] == "step":
-                    level = "Step"
-                    payload = {
-                        "id": data["step_id"],
-                        "metrics": data["metrics"]
-                    }
-                else:
+                prev_hash = self._prev_hash
+                packet, packet_hash, level = self._prepare_packet(data, prev_hash)
+                if packet is None:
                     self.buffer.task_done()
                     continue
-                
-                packet, packet_hash = self._create_audit_packet(
-                    session_id=self.session_id,
-                    packet_type=data["type"],
-                    payload=payload,
-                    prev_hash=prev_hash,
-                    action=data.get("action", "")
-                )
 
-                self._dispatch(
-                    {"packet": packet, "packet_hash": packet_hash},
-                    PACKET_API_URL,
-                    level=level
-                )
-                self.buffer.task_done()
+                self._prev_hash = packet_hash
+
+                threading.Thread(
+                    target=self._dispatch_and_done,
+                    args=({"packet": packet, "packet_hash": packet_hash},
+                        PACKET_API_URL,
+                        level),
+                    daemon=True
+                ).start()
             except queue.Empty:
                 continue
+
+    def _dispatch_and_done(self, payload, url, level):
+        """Dispatch in an independent thread, 
+        and after completion, call task_done"""
+        try:
+            self._dispatch(payload, url, level=level)
+        finally:
+            self.buffer.task_done()
+
+    def _prepare_packet(self, data, prev_hash):
+        """Prepare the packet from the buffer data 
+        without performing any I/O operations."""
+        level = ""
+        if data["type"] == "session":
+            level = "Session"
+            if data["action"] == "start":
+                payload = {
+                    "dataset_name": self.dataset_name,
+                    "dataset_version": self.dataset_version,
+                    "dataset_merkle_root": self.dataset_merkle_root,
+                    "dataset_cid": self.dataset_cid,
+                    "hyperparams": self.hyperparams,
+                }
+            elif data["action"] == "end":
+                payload = {
+                    "model_cid": data["model_cid"],
+                    "model_hash": data["model_hash"],
+                }
+            else:
+                return None, None, None
+        elif data["type"] == "epoch":
+            level = f"Epoch {data['epoch_id']}"
+            payload = {
+                "id": data["epoch_id"],
+                "step_id": data["step_id"],
+                "checkpoint_hash": data["checkpoint_hash"],
+                "checkpoint_cid": data["checkpoint_cid"],
+            }
+        elif data["type"] == "step":
+            level = "Step"
+            payload = {
+                "id": data["step_id"],
+                "metrics": data["metrics"]
+            }
+        else:
+            return None, None, None
+        
+        packet, packet_hash = self._create_audit_packet(
+            session_id=self.session_id,
+            packet_type=data["type"],
+            payload=payload,
+            prev_hash=prev_hash,
+            action=data.get("action", "")
+        )
+
+        return packet, packet_hash, level
 
     def _upload_blob(self, blob: bytes) -> Optional[str]:
         """Upload binary data to the Audit Controller and return the CID."""
